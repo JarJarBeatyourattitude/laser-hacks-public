@@ -53,17 +53,27 @@ File: app.py
 import json
 import os
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # Import timezone for UTC
+
+# Attempt to import dateutil, provide fallback/warning if unavailable
+try:
+    from dateutil import parser as dateutil_parser
+    HAS_DATEUTIL = True
+except ImportError:
+    HAS_DATEUTIL = False
+    print("WARNING: 'python-dateutil' library not found. Datetime parsing might be less robust.")
+    print("Install using: pip install python-dateutil")
 
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import desc, asc, nullslast # Import nullslast for sorting
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from email_validator import validate_email, EmailNotValidError # For email validation
+from email_validator import validate_email, EmailNotValidError
 from openai import OpenAI
-# from dotenv import load_dotenv # Optional: Use python-dotenv for local dev
+# from dotenv import load_dotenv
 
-# load_dotenv() # Uncomment if using .env file
+# load_dotenv()
 
 # --- App Configuration ---
 app = Flask(__name__)
@@ -77,104 +87,150 @@ login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
 
 # --- Database Models ---
+class Comment(db.Model):
+    __tablename__ = 'comment'
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True) # Use UTC default
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
+
+    def __repr__(self):
+        return f'<Comment {self.id} by User:{self.user_id} on Event:{self.event_id}>'
+
 class User(UserMixin, db.Model):
+    __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(128), nullable=False)
     name = db.Column(db.String(100), nullable=True)
     phone = db.Column(db.String(20), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Relationships
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # Use UTC default
     events = db.relationship('Event', backref='creator', lazy='dynamic', cascade="all, delete-orphan")
     commitments = db.relationship('Commitment', backref='user', lazy='dynamic', cascade="all, delete-orphan")
+    comments = db.relationship('Comment', backref='author', lazy='dynamic', cascade="all, delete-orphan")
 
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-    def __repr__(self):
-        return f'<User {self.email}>'
+    def set_password(self, password): self.password_hash = generate_password_hash(password)
+    def check_password(self, password): return check_password_hash(self.password_hash, password)
+    def __repr__(self): return f'<User {self.email}>'
 
 class Event(db.Model):
+    __tablename__ = 'event'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
-    subject = db.Column(db.String(200), nullable=False)
+    subject = db.Column(db.String(200), nullable=False, index=True)
     type = db.Column(db.String(50), nullable=True)
-    proposed_time = db.Column(db.String(100), nullable=False)
+    # Store the original time string from LLM for reference/display fallback
+    proposed_time_string = db.Column(db.String(100), nullable=True)
+    # FIXED: Store parsed datetime, make it nullable in case parsing fails
+    proposed_datetime = db.Column(db.DateTime, nullable=True, index=True)
     proposed_location = db.Column(db.String(200), nullable=False)
     details = db.Column(db.Text, nullable=True)
     reasoning = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), default='proposed', index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-    # Relationships
-    # FIXED: Removed lazy='dynamic' to allow eager loading in the index query
-    commitments = db.relationship('Commitment', backref='event', cascade="all, delete-orphan") # Removed lazy='dynamic'
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True) # Use UTC default
+    commitments = db.relationship('Commitment', backref='event', cascade="all, delete-orphan")
+    comments = db.relationship('Comment', backref='event', cascade="all, delete-orphan",
+                               order_by=Comment.created_at.asc())
 
-    def __repr__(self):
-        return f'<Event {self.id}: {self.subject}>'
+    def __repr__(self): return f'<Event {self.id}: {self.subject}>'
 
 class Commitment(db.Model):
+    __tablename__ = 'commitment'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
-    committed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    committed_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # Use UTC default
     __table_args__ = (db.UniqueConstraint('user_id', 'event_id', name='_user_event_uc'),)
 
-    def __repr__(self):
-        return f'<Commitment User:{self.user_id} to Event:{self.event_id}>'
-
+    def __repr__(self): return f'<Commitment User:{self.user_id} to Event:{self.event_id}>'
 
 # --- Flask-Login Setup ---
 @login_manager.user_loader
 def load_user(user_id):
-    # FIXED: Use db.session.get() instead of User.query.get()
     return db.session.get(User, int(user_id))
 
-# --- OpenAI LLM Interaction ---
-# (No changes needed in this function based on the error)
+# --- Helper Function for Datetime Parsing ---
+def parse_datetime_string(datetime_str):
+    """Attempts to parse various datetime string formats into timezone-aware UTC datetime objects."""
+    if not datetime_str:
+        return None
+    try:
+        # Prioritize ISO format parsing
+        dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00')) # Handle Z for UTC
+        # If offset-naive, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Convert to UTC if it has other timezone info
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        # Fallback using dateutil if available and ISO parsing failed
+        if HAS_DATEUTIL:
+            try:
+                # fuzzy=False requires a closer match
+                dt = dateutil_parser.parse(datetime_str, fuzzy=False)
+                if dt.tzinfo is None:
+                     dt = dt.replace(tzinfo=timezone.utc) # Assume UTC if naive
+                return dt.astimezone(timezone.utc) # Convert to UTC
+            except (ValueError, OverflowError, TypeError) as e:
+                print(f"dateutil parsing failed for '{datetime_str}': {e}")
+                return None
+        else:
+             print(f"ISO parsing failed for '{datetime_str}' and dateutil not available.")
+             return None
+    except Exception as e: # Catch other potential errors
+        print(f"Generic parsing error for '{datetime_str}': {e}")
+        return None
+
+# --- OpenAI LLM Interaction (Updated Prompt) ---
 def call_openai_llm(student_data, user_name="Student"):
-    """Calls OpenAI API to generate event proposals."""
+    """Calls OpenAI API to generate event proposals, requesting specific datetime output."""
     print(f"--- Calling OpenAI API for user: {user_name} ---")
     print(f"Raw Input Data: {student_data}")
     api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("ERROR: OPENAI_API_KEY environment variable not set.")
-        raise ValueError("OpenAI API key not found in environment variables.")
-    try:
-        client = OpenAI(api_key=api_key)
-    except Exception as e:
-        print(f"ERROR: Failed to initialize OpenAI client: {e}")
-        raise ValueError("Failed to initialize OpenAI client.")
+    if not api_key: raise ValueError("OpenAI API key not found in environment variables.")
+    try: client = OpenAI(api_key=api_key)
+    except Exception as e: raise ValueError(f"Failed to initialize OpenAI client: {e}")
 
+    # Get current time in UTC for the prompt
+    # You might adjust this to user's local time if needed, but UTC is generally better for backend consistency
+    now_utc = datetime.now(timezone.utc)
+    current_time_str = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ') # ISO 8601 format
+
+    # FIXED: Updated system prompt to request specific datetime format
     system_prompt = """
     You are an assistant for Irvine Valley College (IVC) students helping them organize study groups and social meetups.
-    Analyze the user's desired meetup (classes, purpose, availability) and propose potential meetup events.
-    Focus on the classes/purpose mentioned. Suggest specific times/locations suitable for IVC.
+    The current time is {current_time}. Analyze the user's desired meetup (classes, purpose, availability) and propose potential meetup events.
+    Focus on the classes/purpose mentioned. Suggest plausible IVC locations.
+    Based on the user's availability and the current time, determine a specific future date and time for the event.
 
     You MUST output your response as a JSON list of objects. Each object represents one proposal and MUST have keys:
-    "type", "subject", "details", "proposed_time", "proposed_location", "reasoning".
-    Generate 1-2 relevant suggestions based on the input. Ensure the entire output is ONLY the JSON list.
-    Keep details concise. The user initiating this is {user_name}. Reference them in the details.
-    Example Input: {{"classes": "CIS 1A", "availability": "Tuesday afternoons", "purpose": "Work on Lab 3"}}
-    Example JSON output:
+    - "type": String (e.g., "Study Group", "Social Hangout").
+    - "subject": String (e.g., "CIS 1A Lab 3 Session").
+    - "details": String, brief description including who initiated it ({user_name}).
+    - "proposed_datetime": String, **A specific future date and time for the event in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ). Calculate this based on the current time and user input.**
+    - "proposed_location": String (e.g., "Library Study Room 3B", "Online/Zoom").
+    - "reasoning": String, brief explanation for the suggestion.
+
+    Example User Input: {{"classes": "MATH 1A", "availability": "Next Tuesday afternoon", "purpose": "Review derivatives"}}
+    Example JSON output (assuming current time is 2025-04-04T23:30:00Z):
     [
       {{
         "type": "Study Group",
-        "subject": "CIS 1A Lab 3 Work Session",
-        "details": "Proposed session for CIS 1A Lab 3, initiated by {user_name}.",
-        "proposed_time": "Tuesday 2:00 PM",
-        "proposed_location": "BSTIC Computer Lab",
-        "reasoning": "Matches class, purpose, and availability. BSTIC lab is relevant for CIS."
+        "subject": "MATH 1A Derivatives Review",
+        "details": "Review session for MATH 1A derivatives, initiated by {user_name}.",
+        "proposed_datetime": "2025-04-08T14:00:00Z", // Example: Calculated Next Tuesday 2 PM UTC
+        "proposed_location": "IVC Math Center (LRC)",
+        "reasoning": "Matches class, purpose, and availability. Proposing next Tuesday afternoon UTC."
       }}
     ]
-    """.format(user_name=user_name)
+    Generate 1-2 relevant suggestions. Ensure the entire output is ONLY the JSON list.
+    """.format(user_name=user_name, current_time=current_time_str) # Pass current time to prompt
 
     user_prompt = f"Here is the student's desired meetup information:\n{json.dumps(student_data)}"
 
     try:
-        print("Sending request to OpenAI API...")
+        print(f"Sending request to OpenAI API (Current Time: {current_time_str})...")
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -188,26 +244,24 @@ def call_openai_llm(student_data, user_name="Student"):
         print(f"Raw API Response Content:\n{json_string}")
         parsed_response = json.loads(json_string)
 
-        if isinstance(parsed_response, list):
-             petitions_list = parsed_response
+        # Handle potentially nested JSON list
+        if isinstance(parsed_response, list): petitions_list = parsed_response
         elif isinstance(parsed_response, dict) and len(parsed_response) > 0:
-             potential_list = next((v for v in parsed_response.values() if isinstance(v, list)), None)
-             if potential_list is not None:
-                 petitions_list = potential_list
-             else:
-                 raise ValueError("JSON response is a dict, but no list found as a value.")
-        else:
-             raise ValueError("Unexpected JSON structure received from API.")
+            potential_list = next((v for v in parsed_response.values() if isinstance(v, list)), None)
+            if potential_list is not None: petitions_list = potential_list
+            else: raise ValueError("JSON response is dict, but no list found.")
+        else: raise ValueError("Unexpected JSON structure from API.")
 
+        # FIXED: Validate for the new 'proposed_datetime' key
         valid_petitions = []
-        required_keys = ["type", "subject", "details", "proposed_time", "proposed_location", "reasoning"]
+        required_keys = ["type", "subject", "details", "proposed_datetime", "proposed_location", "reasoning"]
         for item in petitions_list:
             if isinstance(item, dict) and all(key in item for key in required_keys):
                 valid_petitions.append(item)
             else:
-                print(f"Warning: Petition object missing expected keys or not a dict: {item}")
+                print(f"Warning: Proposal object missing required keys or not a dict: {item}")
 
-        print(f"--- OpenAI Call Successful. Valid Proposed Petitions: {json.dumps(valid_petitions, indent=2)} ---")
+        print(f"--- OpenAI Call Successful. Valid Proposals: {json.dumps(valid_petitions, indent=2)} ---")
         return valid_petitions
 
     except Exception as e:
@@ -218,201 +272,175 @@ def call_openai_llm(student_data, user_name="Student"):
 
 @app.route('/')
 def index():
-    """Displays existing events. Requires login."""
+    """Displays existing events with filtering and sorting."""
     if not current_user.is_authenticated:
-         flash('Please log in or sign up to view and propose events.', 'info')
-         return redirect(url_for('login'))
+         flash('Please log in or sign up.', 'info'); return redirect(url_for('login'))
+
+    subject_filter = request.args.get('subject', '').strip()
+    # FIXED: Added 'event_time_asc' sorting option
+    sort_by = request.args.get('sort_by', 'event_time_asc') # Default sort: Soonest event first
 
     try:
-        # The query should now work correctly with the modified relationship
-        events = Event.query.options(
+        query = Event.query.options(
             db.joinedload(Event.creator),
-            db.joinedload(Event.commitments).joinedload(Commitment.user) # Eager load commitments and their users
-        ).order_by(Event.created_at.desc()).all()
-    except Exception as e:
-        # Log the specific error if the query fails for other reasons
-        print(f"Error fetching events in index route: {e}")
-        flash("Error loading events. Please try again later.", "error")
-        events = [] # Ensure 'events' is an empty list if the query fails
+            db.subqueryload(Event.comments).joinedload(Comment.author),
+            db.subqueryload(Event.commitments).joinedload(Commitment.user)
+        )
 
-    return render_template('index.html', events=events)
+        if subject_filter:
+            query = query.filter(Event.subject.ilike(f'%{subject_filter}%'))
+
+        # Apply Sorting
+        if sort_by == 'date_asc':
+            query = query.order_by(Event.created_at.asc())
+        elif sort_by == 'date_desc':
+             query = query.order_by(Event.created_at.desc())
+        elif sort_by == 'event_time_asc':
+            # Sort by the actual proposed event time (soonest first)
+            # Put events with no parsable time at the end
+            query = query.order_by(nullslast(Event.proposed_datetime.asc()))
+        else: # Default to event_time_asc if invalid sort_by is given
+             query = query.order_by(nullslast(Event.proposed_datetime.asc()))
+
+        events = query.all()
+
+    except Exception as e:
+        print(f"Error fetching events: {e}"); flash("Error loading events.", "error"); events = []
+
+    current_filters = { 'subject': subject_filter, 'sort_by': sort_by }
+    return render_template('index.html', events=events, filters=current_filters)
+
 
 @app.route('/propose', methods=['GET', 'POST'])
 @login_required
 def propose_event_form():
-    """Handles the form for users to describe their desired event, calls LLM, and saves proposals."""
+    """Handles event proposal, parses datetime, saves to DB."""
     if request.method == 'POST':
         classes = request.form.get('classes', '').strip()
         availability = request.form.get('availability', '').strip()
         purpose = request.form.get('purpose', '').strip()
-
         if not availability or not purpose:
-             flash('Please describe the purpose and your availability.', 'error')
+             flash('Purpose and availability are required.', 'error')
              return render_template('propose_form.html', form_data=request.form)
 
-        student_input_data = {
-             "classes": classes,
-             "availability": availability,
-             "purpose": purpose
-         }
-
+        student_input_data = { "classes": classes, "availability": availability, "purpose": purpose }
         try:
-            user_identifier = current_user.name if current_user.name else current_user.email
+            user_identifier = current_user.name or current_user.email
             proposed_events_data = call_openai_llm(student_input_data, user_identifier)
 
             if not proposed_events_data:
-                flash('The AI could not generate any event suggestions based on your input. Try being more specific.', 'info')
+                flash('AI could not generate suggestions.', 'info')
                 return render_template('propose_form.html', form_data=request.form)
 
             num_saved = 0
             for event_data in proposed_events_data:
+                # FIXED: Parse datetime string from LLM
+                proposed_dt_str = event_data.get('proposed_datetime')
+                parsed_datetime = parse_datetime_string(proposed_dt_str)
+                if not parsed_datetime:
+                     flash(f"Warning: Could not parse proposed time '{proposed_dt_str}' for event '{event_data.get('subject')}'. It won't be sortable by time.", "warning")
+
                 try:
                     new_event = Event(
                         user_id=current_user.id,
                         subject=event_data.get('subject'),
                         type=event_data.get('type'),
-                        proposed_time=event_data.get('proposed_time'),
+                        # Store both the string and the parsed datetime (or None)
+                        proposed_time_string=proposed_dt_str, # Store original string
+                        proposed_datetime=parsed_datetime,     # Store parsed object (or None)
                         proposed_location=event_data.get('proposed_location'),
                         details=event_data.get('details'),
                         reasoning=event_data.get('reasoning'),
                         status='proposed'
                     )
-                    db.session.add(new_event)
-                    num_saved += 1
-                except Exception as e:
-                    print(f"Error creating event object from data {event_data}: {e}")
-                    flash(f"Warning: Could not process one of the AI suggestions.", "warning")
+                    db.session.add(new_event); num_saved += 1
+                except Exception as e: print(f"Error creating event obj: {e}"); flash("Warning: Couldn't save AI suggestion.", "warning")
 
             if num_saved > 0:
-                db.session.commit()
-                flash(f'{num_saved} new event proposal(s) created!', 'success')
+                db.session.commit(); flash(f'{num_saved} new proposal(s) created!', 'success')
                 return redirect(url_for('index'))
-            else:
-                flash('Could not save any AI suggestions. Please try again.', 'error')
-                return render_template('propose_form.html', form_data=request.form)
+            else: flash('Could not save any AI suggestions.', 'error'); return render_template('propose_form.html', form_data=request.form)
 
-        except ValueError as ve:
-            flash(f'Configuration Error: {ve}', 'error')
-        except Exception as e:
-            db.session.rollback()
-            flash(f'An unexpected error occurred: {e}', 'error')
-            print(f"Error in /propose POST route: {e}")
-
+        except ValueError as ve: flash(f'Config Error: {ve}', 'error')
+        except Exception as e: db.session.rollback(); flash(f'Unexpected error: {e}', 'error'); print(f"Error: {e}")
         return render_template('propose_form.html', form_data=request.form)
 
-    # GET Request
-    return render_template('propose_form.html') # Render the actual form template on GET
+    return render_template('propose_form.html')
 
+
+# (Commit route remains the same)
 @app.route('/commit/<int:event_id>', methods=['POST'])
 @login_required
 def commit_to_event(event_id):
-    """Allows a logged-in user to commit to attending an event via AJAX POST request."""
-    event = db.session.get(Event, event_id) # Use newer db.session.get()
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-
-    existing_commitment = Commitment.query.filter_by(user_id=current_user.id, event_id=event_id).first()
-    if existing_commitment:
-        return jsonify({"error": "Already committed to this event"}), 409
-
+    event = db.session.get(Event, event_id)
+    if not event: return jsonify({"error": "Event not found"}), 404
+    if Commitment.query.filter_by(user_id=current_user.id, event_id=event_id).first():
+        return jsonify({"error": "Already committed"}), 409
     try:
-        new_commitment = Commitment(user_id=current_user.id, event_id=event_id)
-        db.session.add(new_commitment)
+        db.session.add(Commitment(user_id=current_user.id, event_id=event_id))
         db.session.commit()
-
-        # Reminder Simulation
-        user_contact = current_user.phone if current_user.phone else current_user.email
-        print(f"--- REMINDER SIMULATION ---")
-        print(f"User: {current_user.email} (ID: {current_user.id}) committed to Event: {event.subject} (ID: {event.id})")
-        print(f"Would send reminder to contact: {user_contact}")
-        print(f"--------------------------")
-
+        user_contact = current_user.phone or current_user.email
+        print(f"--- REMINDER SIM: User {current_user.email} committed to '{event.subject}'. Contact: {user_contact} ---")
         return jsonify({"message": "Successfully committed", "user_name": current_user.name or current_user.email}), 201
+    except Exception as e: db.session.rollback(); print(f"Error committing: {e}"); return jsonify({"error": "DB error"}), 500
 
-    except Exception as e:
-        db.session.rollback()
-        print(f"Error committing User {current_user.id} to Event {event_id}: {e}")
-        return jsonify({"error": "Database error during commitment. Please try again."}), 500
+
+# (Add Comment route remains the same)
+@app.route('/event/<int:event_id>/comment', methods=['POST'])
+@login_required
+def add_comment(event_id):
+    event = db.session.get(Event, event_id)
+    if not event: flash("Event not found.", "error"); return redirect(url_for('index'))
+    comment_text = request.form.get('comment_text', '').strip()
+    if not comment_text: flash("Comment cannot be empty.", "error"); return redirect(url_for('index', _anchor=f'event-{event_id}'))
+    try:
+        new_comment = Comment(text=comment_text, user_id=current_user.id, event_id=event_id)
+        db.session.add(new_comment); db.session.commit(); flash("Comment added!", "success")
+    except Exception as e: db.session.rollback(); print(f"Error adding comment: {e}"); flash("Error adding comment.", "error")
+    return redirect(url_for('index', _anchor=f'event-{event_id}'))
 
 # --- Authentication Routes ---
-# (No changes needed in signup, login, logout routes based on the error)
+# (Signup, Login, Logout routes remain the same)
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
+    if current_user.is_authenticated: return redirect(url_for('index'))
     if request.method == 'POST':
-        email = request.form.get('email', '').strip()
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-        name = request.form.get('name', '').strip()
-        phone = request.form.get('phone', '').strip()
-        error = False
-        if not email or not password or not confirm_password:
-            flash('Please fill out all required fields (Email, Password, Confirm Password).', 'error'); error = True
-        if password != confirm_password:
-            flash('Passwords do not match.', 'error'); error = True
-        try:
-            valid_email = validate_email(email, check_deliverability=False).normalized
-        except EmailNotValidError as e:
-            flash(f"Invalid email address: {e}", 'error'); error = True; valid_email = None
-        if valid_email and db.session.get(User, {'email': valid_email}): # Check if email exists (using alternative to filter_by) - Note: session.get needs primary key usually, adjust if needed or use filter_by
-             # Revert to filter_by for simplicity here as get usually takes PK
-             if User.query.filter_by(email=valid_email).first():
-                 flash('Email address already registered. Please log in.', 'warning'); error = True
-        if error:
-            return render_template('signup.html', form_data=request.form)
-        new_user = User(email=valid_email, name=name, phone=phone)
-        new_user.set_password(password)
-        db.session.add(new_user)
-        try:
-            db.session.commit()
-            flash('Account created successfully! You are now logged in.', 'success')
-            login_user(new_user)
-            return redirect(url_for('index'))
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Database error creating account. Please try again later.', 'error')
-            print(f"Error during signup commit: {e}")
-            return render_template('signup.html', form_data=request.form)
+        email=request.form.get('email','').strip();password=request.form.get('password');confirm_password=request.form.get('confirm_password');name=request.form.get('name','').strip();phone=request.form.get('phone','').strip();error=False
+        if not email or not password or not confirm_password:flash('Required fields missing.','error');error=True
+        if password!=confirm_password:flash('Passwords do not match.','error');error=True
+        try:valid_email=validate_email(email,check_deliverability=False).normalized
+        except EmailNotValidError as e:flash(f"Invalid email: {e}",'error');error=True;valid_email=None
+        if valid_email and User.query.filter_by(email=valid_email).first():flash('Email already registered.','warning');error=True
+        if error:return render_template('signup.html',form_data=request.form)
+        new_user=User(email=valid_email,name=name,phone=phone);new_user.set_password(password);db.session.add(new_user)
+        try:db.session.commit();flash('Account created! You are logged in.','success');login_user(new_user);return redirect(url_for('index'))
+        except Exception as e:db.session.rollback();flash('DB error creating account.','error');print(f"Signup Error: {e}");return render_template('signup.html',form_data=request.form)
     return render_template('signup.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-    if request.method == 'POST':
-        email = request.form.get('email', '').strip()
-        password = request.form.get('password')
-        remember = True if request.form.get('remember') else False
-        try:
-            valid_email = validate_email(email, check_deliverability=False).normalized
-        except EmailNotValidError:
-             flash('Invalid email format.', 'error')
-             return render_template('login.html', form_data=request.form)
-        user = User.query.filter_by(email=valid_email).first()
-        if not user or not user.check_password(password):
-            flash('Invalid email or password. Please try again.', 'error')
-            return render_template('login.html', form_data=request.form)
-        login_user(user, remember=remember)
-        flash('Logged in successfully.', 'success')
-        next_page = request.args.get('next')
-        if next_page and not next_page.startswith('/'): next_page = url_for('index') # Basic security check
+    if current_user.is_authenticated:return redirect(url_for('index'))
+    if request.method=='POST':
+        email=request.form.get('email','').strip();password=request.form.get('password');remember=True if request.form.get('remember')else False
+        try:valid_email=validate_email(email,check_deliverability=False).normalized
+        except EmailNotValidError:flash('Invalid email format.','error');return render_template('login.html',form_data=request.form)
+        user=User.query.filter_by(email=valid_email).first()
+        if not user or not user.check_password(password):flash('Invalid email or password.','error');return render_template('login.html',form_data=request.form)
+        login_user(user,remember=remember);flash('Logged in successfully.','success')
+        next_page=request.args.get('next')
+        if next_page and not next_page.startswith('/'):next_page=url_for('index')
         return redirect(next_page or url_for('index'))
     return render_template('login.html')
 
 @app.route('/logout')
 @login_required
 def logout():
-    logout_user()
-    flash('You have been logged out successfully.', 'success')
-    return redirect(url_for('login'))
+    logout_user();flash('You have been logged out.','success');return redirect(url_for('login'))
 
-# --- Main Execution and DB Initialization ---
+# --- Main Execution ---
 if __name__ == '__main__':
-    with app.app_context():
-        print("Initializing database schema...")
-        db.create_all()
-        print("Database schema initialization complete.")
+    # Add dateutil install check here? Maybe too much for startup. Warning printed at import.
+    with app.app_context(): print("Initializing DB..."); db.create_all(); print("DB Initialized.")
     app.run(debug=True, port=5001)
 ================================================================================
 
@@ -425,130 +453,127 @@ File: templates/index.html
 {% block content %}
     <h1>Upcoming IVC Meetups</h1>
 
+    {# Filter and Sort Form - Added Event Time Sort #}
+    <div class="filter-sort-controls" style="background-color: #f1f1f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+        <form method="GET" action="{{ url_for('index') }}" style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+             <div>
+                 <label for="subject" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Filter by Subject:</label>
+                 <input type="text" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study" style="padding: 8px; font-size: 0.9em; width: 200px;">
+             </div>
+             <div>
+                 <label for="sort_by" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Sort by:</label>
+                 <select id="sort_by" name="sort_by" style="padding: 8px; font-size: 0.9em;">
+                     {# FIXED: Added option for event time sorting #}
+                     <option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option>
+                     <option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option>
+                     <option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option>
+                 </select>
+             </div>
+             <div>
+                  <button type="submit" style="padding: 8px 15px; font-size: 0.9em; margin-top: 18px;">Apply</button> {# Adjust margin if needed #}
+             </div>
+         </form>
+     </div>
+
+    {# Event List #}
     <div class="event-list">
         {% if events %}
             {% for event in events %}
                 <div class="event-card" id="event-{{ event.id }}">
                     <h3>
                         {{ event.subject }}
-                        {% if event.type %}
-                            <span class="event-type">({{ event.type }})</span>
-                        {% endif %}
+                        {% if event.type %}<span class="event-type">({{ event.type }})</span>{% endif %}
                     </h3>
                     <p>
-                        <strong>Time:</strong> {{ event.proposed_time }} <br>
+                        {# FIXED: Display parsed DateTime if available, otherwise fallback #}
+                        <strong>Time:</strong>
+                        {% if event.proposed_datetime %}
+                            {{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }} {# Example Format #}
+                        {% elif event.proposed_time_string %}
+                            {{ event.proposed_time_string }} <small>(Could not parse date)</small>
+                        {% else %}
+                            Not specified
+                        {% endif %}
+                        <br>
                         <strong>Location:</strong> {{ event.proposed_location }} <br>
                         <strong>Details:</strong> {{ event.details }} <br>
                         <strong>Proposed by:</strong> {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}
                     </p>
 
+                    {# Commit Section #}
                     <div class="commit-section">
-                        <strong>Committed ({{ event.commitments.count() }}):</strong> {# Use .count() for dynamic query #}
+                        <strong>Committed ({{ event.commitments|length }}):</strong>
                         <span id="committed-list-{{ event.id }}">
-                            {% for commitment in event.commitments %}
-                                {{ commitment.user.name or commitment.user.email }}{% if not loop.last %}, {% endif %}
-                            {% else %}
-                                No one yet. Be the first!
-                            {% endfor %}
+                            {% for commitment in event.commitments %}{{ commitment.user.name or commitment.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}
                         </span>
+                        <div style="margin-top: 10px;">
+                             {% if current_user.is_authenticated %}
+                                {% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}
+                                {% if user_committed %}<button class="committed-btn" disabled>Committed</button>
+                                {% else %}<button class="commit-btn" data-event-id="{{ event.id }}">Commit</button>{% endif %}
+                             {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
+                            <div class="commit-feedback" id="feedback-{{ event.id }}"></div>
+                        </div>
                     </div>
 
-                    {% if current_user.is_authenticated %}
-                        {# Check if current user is committed #}
-                        {% set user_committed = event.commitments.filter_by(user_id=current_user.id).first() %}
-
-                        {% if user_committed %}
-                            <button class="committed-btn" disabled>Committed</button>
-                        {% else %}
-                            <button class="commit-btn" data-event-id="{{ event.id }}">Commit to Attend</button>
-                        {% endif %}
-                    {% else %}
-                        <p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>
-                    {% endif %}
-                    <div class="commit-feedback" id="feedback-{{ event.id }}"></div> {# Unique ID for feedback #}
-                </div>
+                    {# Comments Section #}
+                    <div class="comments-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
+                        <h4>Comments</h4>
+                        <div class="comment-list" style="margin-bottom: 15px; max-height: 200px; overflow-y: auto; font-size: 0.9em;">
+                            {% if event.comments %} {# Iterate directly over ordered comments #}
+                                {% for comment in event.comments %}
+                                    <div class="comment" style="margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px dashed #f0f0f0;">
+                                        <strong>{{ comment.author.name or comment.author.email }}:</strong>
+                                        <span style="color: #444;">{{ comment.text }}</span>
+                                        <small style="display: block; color: #888; font-size: 0.8em;">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small>
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <p><small>No comments yet.</small></p>
+                            {% endif %}
+                        </div>
+                        {% if current_user.is_authenticated %}
+                            <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
+                                <textarea name="comment_text" rows="2" placeholder="Add comment..." required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 5px; box-sizing: border-box; font-size: 0.9em;"></textarea>
+                                <button type="submit" style="padding: 5px 10px; font-size: 0.9em;">Post</button>
+                            </form>
+                        {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
+                    </div>
+                </div> {# End event-card #}
             {% endfor %}
         {% else %}
-            <p>No events proposed yet. Be the first to <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
+             <p>No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
         {% endif %}
     </div> {# End event-list #}
-
 {% endblock %}
 
-
 {% block scripts %}
-{# Script for handling the 'Commit' button clicks via AJAX #}
+{# Commit Button AJAX Script (Unchanged) #}
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const eventList = document.querySelector('.event-list'); // Target container
-
+        const eventList = document.querySelector('.event-list');
         if (eventList) {
             eventList.addEventListener('click', async (event) => {
-                // Only act if a commit button was clicked
-                if (!event.target.classList.contains('commit-btn')) {
-                    return;
-                }
-
-                const button = event.target;
-                const eventId = button.getAttribute('data-event-id');
-                const eventCard = button.closest('.event-card');
-                const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
-                const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`);
-
-                button.disabled = true; // Disable button immediately
-                feedbackDiv.textContent = 'Processing...';
-                feedbackDiv.style.color = '#555';
-
+                if (!event.target.classList.contains('commit-btn')) { return; }
+                const button = event.target; const eventId = button.getAttribute('data-event-id');
+                const eventCard = button.closest('.event-card'); const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
+                const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`); button.disabled = true;
+                feedbackDiv.textContent = 'Processing...'; feedbackDiv.style.color = '#555';
                 try {
-                    const response = await fetch(`/commit/${eventId}`, {
-                        method: 'POST',
-                        headers: {
-                            'Accept': 'application/json', // Indicate we expect JSON back
-                            // No CSRF token needed without Flask-WTF
-                        }
-                    });
-
-                    const result = await response.json(); // Expecting JSON response
-
-                    if (response.ok && response.status === 201) { // 201 Created
-                        feedbackDiv.textContent = 'Successfully committed!';
-                        feedbackDiv.style.color = 'green';
-
-                        // Update button appearance
-                        button.textContent = 'Committed';
-                        button.classList.remove('commit-btn');
-                        button.classList.add('committed-btn');
-                        // Button remains disabled
-
-                        // Dynamically update the committed list (basic example)
-                        const userName = result.user_name || 'You'; // Use name from response
+                    const response = await fetch(`/commit/${eventId}`, { method: 'POST', headers: {'Accept': 'application/json'} });
+                    const result = await response.json();
+                    if (response.ok && response.status === 201) {
+                        feedbackDiv.textContent = 'Committed!'; feedbackDiv.style.color = 'green'; button.textContent = 'Committed';
+                        button.classList.remove('commit-btn'); button.classList.add('committed-btn');
+                        const userName = result.user_name || 'You';
                         if (committedListSpan) {
-                            const currentText = committedListSpan.textContent.trim();
-                            if (currentText.includes('No one yet')) {
-                                committedListSpan.textContent = userName;
-                            } else {
-                                committedListSpan.textContent += `, ${userName}`;
-                            }
-                            // Update the count (requires fetching count again or incrementing)
-                            const countStrong = committedListSpan.previousElementSibling; // The <strong> tag
-                            if(countStrong) {
-                                const currentCount = parseInt(countStrong.textContent.match(/\d+/)[0] || 0);
-                                countStrong.textContent = `Committed (${currentCount + 1}):`;
-                            }
+                            const currentText = committedListSpan.textContent.trim(); const strongTag = committedListSpan.previousElementSibling;
+                            let currentCount = 0; if (strongTag && strongTag.textContent.includes('(')) { currentCount = parseInt(strongTag.textContent.match(/\d+/)[0] || 0); }
+                            if (currentText.includes('No one yet')) { committedListSpan.textContent = userName; } else { committedListSpan.textContent += `, ${userName}`; }
+                            if (strongTag) { strongTag.textContent = `Committed (${currentCount + 1}):`; }
                         }
-
-                    } else {
-                         // Handle errors (like 409 Conflict or 500 Server Error)
-                         feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`;
-                         feedbackDiv.style.color = 'red';
-                         button.disabled = false; // Re-enable button on failure
-                    }
-                } catch (error) {
-                    console.error('Commit AJAX error:', error);
-                    feedbackDiv.textContent = 'An network error occurred. Please try again.';
-                    feedbackDiv.style.color = 'red';
-                    button.disabled = false; // Re-enable button on network error
-                }
+                    } else { feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`; feedbackDiv.style.color = 'red'; button.disabled = false; }
+                } catch (error) { console.error('Commit AJAX error:', error); feedbackDiv.textContent = 'Network error.'; feedbackDiv.style.color = 'red'; button.disabled = false; }
             });
         }
     });

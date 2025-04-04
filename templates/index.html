@@ -3,135 +3,130 @@
 {% block title %}Home / Events{% endblock %}
 
 {% block content %}
-    <h1>Upcoming IVC Meetups</h1>
 
+    {# --- NEW: User's Committed Events Section --- #}
+    {% if current_user.is_authenticated and committed_events %}
+    <div class="committed-events-section" style="margin-bottom: 30px; padding: 15px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 5px;">
+        <h2>Your Upcoming Committed Events</h2>
+        <ul style="list-style: none; padding: 0;">
+            {% for event in committed_events %}
+                <li style="margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #d0e5ff;">
+                    {# Link to the main event card using anchor #}
+                    <a href="#event-{{ event.id }}" style="font-weight: bold;">{{ event.subject }}</a>
+                    {% if event.type %}<span class="event-type" style="font-size: 0.9em;">({{ event.type }})</span>{% endif %}
+                    <br>
+                    <small>
+                        {% if event.proposed_datetime %}
+                            {{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }} - {{ event.proposed_location }}
+                        {% elif event.proposed_time_string %}
+                            {{ event.proposed_time_string }} - {{ event.proposed_location }} <span style="color:#cc0000;">(Time needs confirmation)</span>
+                        {% else %}
+                            Time/Location pending
+                        {% endif %}
+                    </small>
+                </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {# --- End Committed Events Section --- #}
+
+
+    <h1>{{ 'All Proposed Meetups' if not filters.subject else 'Filtered Meetups' }}</h1>
+
+    {# Filter and Sort Form (Unchanged) #}
+    <div class="filter-sort-controls" style="background-color: #f1f1f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+        <form method="GET" action="{{ url_for('index') }}" style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+             <div><label for="subject" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Filter by Subject:</label><input type="text" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study" style="padding: 8px; font-size: 0.9em; width: 200px;"></div>
+             <div><label for="sort_by" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Sort by:</label><select id="sort_by" name="sort_by" style="padding: 8px; font-size: 0.9em;"><option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option><option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option><option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option></select></div>
+             <div><button type="submit" style="padding: 8px 15px; font-size: 0.9em; margin-top: 18px;">Apply</button></div>
+         </form>
+     </div>
+
+    {# Event List #}
     <div class="event-list">
         {% if events %}
             {% for event in events %}
-                <div class="event-card" id="event-{{ event.id }}">
-                    <h3>
-                        {{ event.subject }}
-                        {% if event.type %}
-                            <span class="event-type">({{ event.type }})</span>
-                        {% endif %}
-                    </h3>
+                <div class="event-card" id="event-{{ event.id }}"> {# Existing anchor target #}
+                    <h3>{{ event.subject }}{% if event.type %}<span class="event-type">({{ event.type }})</span>{% endif %}</h3>
                     <p>
-                        <strong>Time:</strong> {{ event.proposed_time }} <br>
+                        <strong>Time:</strong>
+                        {% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} <small>(Could not parse date)</small>{% else %}Not specified{% endif %}<br>
                         <strong>Location:</strong> {{ event.proposed_location }} <br>
                         <strong>Details:</strong> {{ event.details }} <br>
                         <strong>Proposed by:</strong> {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}
                     </p>
 
+                    {# Commit Section #}
                     <div class="commit-section">
-                        {# Use |length filter for lists/collections #}
                         <strong>Committed ({{ event.commitments|length }}):</strong>
-                        <span id="committed-list-{{ event.id }}">
-                            {% for commitment in event.commitments %}
-                                {{ commitment.user.name or commitment.user.email }}{% if not loop.last %}, {% endif %}
-                            {% else %}
-                                No one yet. Be the first!
-                            {% endfor %}
-                        </span>
+                        <span id="committed-list-{{ event.id }}">{% for c in event.commitments %}{{ c.user.name or c.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}</span>
+                        <div style="margin-top: 10px;">
+                             {% if current_user.is_authenticated %}
+                                {% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}
+                                {% if user_committed %}<button class="committed-btn" disabled>Committed</button>{% else %}<button class="commit-btn" data-event-id="{{ event.id }}">Commit</button>{% endif %}
+                             {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
+                            <div class="commit-feedback" id="feedback-{{ event.id }}"></div>
+                        </div>
                     </div>
 
-                    {% if current_user.is_authenticated %}
-                        {# Check if current user is committed #}
-                        {% set user_committed = false %}
-                        {% for c in event.commitments %}
-                            {% if c.user_id == current_user.id %}
-                                {% set user_committed = true %}
-                                {# FIXED: Removed unsupported 'break' tag #}
-                            {% endif %}
-                        {% endfor %}
-
-                        {% if user_committed %}
-                            <button class="committed-btn" disabled>Committed</button>
-                        {% else %}
-                            <button class="commit-btn" data-event-id="{{ event.id }}">Commit to Attend</button>
-                        {% endif %}
-                    {% else %}
-                        <p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>
-                    {% endif %}
-                    <div class="commit-feedback" id="feedback-{{ event.id }}"></div> {# Unique ID for feedback #}
-                </div>
+                    {# Comments Section #}
+                    <div class="comments-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
+                        <h4>Comments</h4>
+                        <div class="comment-list" style="margin-bottom: 15px; max-height: 200px; overflow-y: auto; font-size: 0.9em;">
+                            {% if event.comments %} {# Use relationship directly - ordered by definition #}
+                                {% for comment in event.comments %}
+                                    <div class="comment" style="margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px dashed #f0f0f0;">
+                                        <strong>{{ comment.author.name or comment.author.email }}:</strong>
+                                        <span style="color: #444;">{{ comment.text }}</span>
+                                        <small style="display: block; color: #888; font-size: 0.8em;">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small>
+                                    </div>
+                                {% endfor %}
+                            {% else %}<p><small>No comments yet.</small></p>{% endif %}
+                        </div>
+                        {% if current_user.is_authenticated %}
+                            <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
+                                <textarea name="comment_text" rows="2" placeholder="Add comment..." required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 5px; box-sizing: border-box; font-size: 0.9em;"></textarea>
+                                <button type="submit" style="padding: 5px 10px; font-size: 0.9em;">Post</button>
+                            </form>
+                        {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
+                    </div>
+                </div> {# End event-card #}
             {% endfor %}
         {% else %}
-            <p>No events proposed yet. Be the first to <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
+             <p>No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
         {% endif %}
     </div> {# End event-list #}
-
 {% endblock %}
 
 
 {% block scripts %}
-{# Script for handling the 'Commit' button clicks via AJAX (Unchanged from previous correct version) #}
+{# Commit Button AJAX Script (Unchanged) #}
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         const eventList = document.querySelector('.event-list');
-
         if (eventList) {
             eventList.addEventListener('click', async (event) => {
-                if (!event.target.classList.contains('commit-btn')) {
-                    return;
-                }
-
-                const button = event.target;
-                const eventId = button.getAttribute('data-event-id');
-                const eventCard = button.closest('.event-card');
-                const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
-                const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`);
-
-                button.disabled = true;
-                feedbackDiv.textContent = 'Processing...';
-                feedbackDiv.style.color = '#555';
-
+                if (!event.target.classList.contains('commit-btn')) { return; }
+                const button = event.target; const eventId = button.getAttribute('data-event-id');
+                const eventCard = button.closest('.event-card'); const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
+                const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`); button.disabled = true;
+                feedbackDiv.textContent = 'Processing...'; feedbackDiv.style.color = '#555';
                 try {
-                    const response = await fetch(`/commit/${eventId}`, {
-                        method: 'POST',
-                        headers: {
-                            'Accept': 'application/json',
-                        }
-                    });
-
+                    const response = await fetch(`/commit/${eventId}`, { method: 'POST', headers: {'Accept': 'application/json'} });
                     const result = await response.json();
-
                     if (response.ok && response.status === 201) {
-                        feedbackDiv.textContent = 'Successfully committed!';
-                        feedbackDiv.style.color = 'green';
-                        button.textContent = 'Committed';
-                        button.classList.remove('commit-btn');
-                        button.classList.add('committed-btn');
-
-                        // Dynamically update the committed list
+                        feedbackDiv.textContent = 'Committed!'; feedbackDiv.style.color = 'green'; button.textContent = 'Committed';
+                        button.classList.remove('commit-btn'); button.classList.add('committed-btn');
                         const userName = result.user_name || 'You';
                         if (committedListSpan) {
-                            const currentText = committedListSpan.textContent.trim();
-                            const strongTag = committedListSpan.previousElementSibling;
-                            let currentCount = 0;
-                            if (strongTag && strongTag.textContent.includes('(')) {
-                                currentCount = parseInt(strongTag.textContent.match(/\d+/)[0] || 0);
-                            }
-
-                            if (currentText.includes('No one yet')) {
-                                committedListSpan.textContent = userName;
-                            } else {
-                                committedListSpan.textContent += `, ${userName}`;
-                            }
-                            if (strongTag) {
-                                strongTag.textContent = `Committed (${currentCount + 1}):`;
-                            }
+                            const currentText = committedListSpan.textContent.trim(); const strongTag = committedListSpan.previousElementSibling;
+                            let currentCount = 0; if (strongTag && strongTag.textContent.includes('(')) { currentCount = parseInt(strongTag.textContent.match(/\d+/)[0] || 0); }
+                            if (currentText.includes('No one yet')) { committedListSpan.textContent = userName; } else { committedListSpan.textContent += `, ${userName}`; }
+                            if (strongTag) { strongTag.textContent = `Committed (${currentCount + 1}):`; }
                         }
-                    } else {
-                         feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`;
-                         feedbackDiv.style.color = 'red';
-                         button.disabled = false;
-                    }
-                } catch (error) {
-                    console.error('Commit AJAX error:', error);
-                    feedbackDiv.textContent = 'An network error occurred. Please try again.';
-                    feedbackDiv.style.color = 'red';
-                    button.disabled = false;
-                }
+                    } else { feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`; feedbackDiv.style.color = 'red'; button.disabled = false; }
+                } catch (error) { console.error('Commit AJAX error:', error); feedbackDiv.textContent = 'Network error.'; feedbackDiv.style.color = 'red'; button.disabled = false; }
             });
         }
     });
