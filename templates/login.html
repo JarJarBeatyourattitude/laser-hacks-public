@@ -1,0 +1,28 @@
+{% extends "layout.html" %}
+
+{% block title %}Login{% endblock %}
+
+{% block content %}
+    <h2>Login</h2>
+    <form method="POST" action="{{ url_for('login') }}">
+        {# Hidden input to potentially preserve 'next' URL if needed, handled in route #}
+        <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+
+        <div>
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required autofocus>
+        </div>
+        <div>
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+        <div>
+             <input type="checkbox" id="remember" name="remember" value="1"> {# Use value="1" #}
+             <label for="remember">Remember Me</label>
+        </div>
+        <button type="submit">Login</button>
+    </form>
+    <p style="margin-top: 1rem;">
+        Don't have an account? <a href="{{ url_for('signup') }}">Sign up here</a>
+    </p>
+{% endblock %}

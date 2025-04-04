@@ -1,0 +1,832 @@
+File: aiCopy.py
+
+#!/usr/bin/env python3
+import pathlib
+
+def gather_files_content(output_file: pathlib.Path, extensions: tuple) -> None:
+    """
+    Recursively gather the content of files with specified extensions in the current directory 
+    and its subdirectories and save it to a text file.
+
+    This function searches for files that have an extension matching any in the provided tuple.
+    It writes a header with the file's relative path and then writes the file's content 
+    to the output file. Each file's content is separated by a line of equal signs.
+    
+    Args:
+        output_file (pathlib.Path): The file path to which the output should be written.
+        extensions (tuple): A tuple of file extensions to search for (e.g., (".py", ".html")).
+    
+    Returns:
+        None
+    """
+    current_path = pathlib.Path(".")
+    with output_file.open("w", encoding="utf-8") as out_file:
+        for file_path in current_path.rglob("*"):
+            if file_path.suffix in extensions:
+                out_file.write(f"File: {file_path}\n\n")
+                try:
+                    with file_path.open("r", encoding="utf-8") as file:
+                        content = file.read()
+                        out_file.write(content)
+                except Exception as e:
+                    out_file.write(f"Error reading file {file_path}: {e}")
+                out_file.write("\n" + "=" * 80 + "\n\n")
+
+def main() -> None:
+    """
+    The main entry point of the script.
+
+    Creates an output text file 'files_dump.txt' in the current directory and writes the gathered
+    content of all Python and HTML files to it.
+    """
+    output_path = pathlib.Path("files_dump.txt")
+    gather_files_content(output_path, (".py", ".html"))
+    print(f"Dump saved to {output_path}")
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+
+File: app.py
+
+import json
+import os
+import random
+from datetime import datetime, timedelta
+
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from email_validator import validate_email, EmailNotValidError # For email validation
+from openai import OpenAI
+# from dotenv import load_dotenv # Optional: Use python-dotenv for local dev
+
+# load_dotenv() # Uncomment if using .env file
+
+# --- App Configuration ---
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-please-change')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+login_manager.login_message_category = 'info'
+
+# --- Database Models ---
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(128), nullable=False)
+    name = db.Column(db.String(100), nullable=True)
+    phone = db.Column(db.String(20), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Relationships
+    events = db.relationship('Event', backref='creator', lazy='dynamic', cascade="all, delete-orphan")
+    commitments = db.relationship('Commitment', backref='user', lazy='dynamic', cascade="all, delete-orphan")
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def __repr__(self):
+        return f'<User {self.email}>'
+
+class Event(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    subject = db.Column(db.String(200), nullable=False)
+    type = db.Column(db.String(50), nullable=True)
+    proposed_time = db.Column(db.String(100), nullable=False)
+    proposed_location = db.Column(db.String(200), nullable=False)
+    details = db.Column(db.Text, nullable=True)
+    reasoning = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), default='proposed', index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    # Relationships
+    # FIXED: Removed lazy='dynamic' to allow eager loading in the index query
+    commitments = db.relationship('Commitment', backref='event', cascade="all, delete-orphan") # Removed lazy='dynamic'
+
+    def __repr__(self):
+        return f'<Event {self.id}: {self.subject}>'
+
+class Commitment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
+    committed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('user_id', 'event_id', name='_user_event_uc'),)
+
+    def __repr__(self):
+        return f'<Commitment User:{self.user_id} to Event:{self.event_id}>'
+
+
+# --- Flask-Login Setup ---
+@login_manager.user_loader
+def load_user(user_id):
+    # FIXED: Use db.session.get() instead of User.query.get()
+    return db.session.get(User, int(user_id))
+
+# --- OpenAI LLM Interaction ---
+# (No changes needed in this function based on the error)
+def call_openai_llm(student_data, user_name="Student"):
+    """Calls OpenAI API to generate event proposals."""
+    print(f"--- Calling OpenAI API for user: {user_name} ---")
+    print(f"Raw Input Data: {student_data}")
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("ERROR: OPENAI_API_KEY environment variable not set.")
+        raise ValueError("OpenAI API key not found in environment variables.")
+    try:
+        client = OpenAI(api_key=api_key)
+    except Exception as e:
+        print(f"ERROR: Failed to initialize OpenAI client: {e}")
+        raise ValueError("Failed to initialize OpenAI client.")
+
+    system_prompt = """
+    You are an assistant for Irvine Valley College (IVC) students helping them organize study groups and social meetups.
+    Analyze the user's desired meetup (classes, purpose, availability) and propose potential meetup events.
+    Focus on the classes/purpose mentioned. Suggest specific times/locations suitable for IVC.
+
+    You MUST output your response as a JSON list of objects. Each object represents one proposal and MUST have keys:
+    "type", "subject", "details", "proposed_time", "proposed_location", "reasoning".
+    Generate 1-2 relevant suggestions based on the input. Ensure the entire output is ONLY the JSON list.
+    Keep details concise. The user initiating this is {user_name}. Reference them in the details.
+    Example Input: {{"classes": "CIS 1A", "availability": "Tuesday afternoons", "purpose": "Work on Lab 3"}}
+    Example JSON output:
+    [
+      {{
+        "type": "Study Group",
+        "subject": "CIS 1A Lab 3 Work Session",
+        "details": "Proposed session for CIS 1A Lab 3, initiated by {user_name}.",
+        "proposed_time": "Tuesday 2:00 PM",
+        "proposed_location": "BSTIC Computer Lab",
+        "reasoning": "Matches class, purpose, and availability. BSTIC lab is relevant for CIS."
+      }}
+    ]
+    """.format(user_name=user_name)
+
+    user_prompt = f"Here is the student's desired meetup information:\n{json.dumps(student_data)}"
+
+    try:
+        print("Sending request to OpenAI API...")
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={ "type": "json_object" }
+        )
+        print("Received response from OpenAI API.")
+        json_string = response.choices[0].message.content
+        print(f"Raw API Response Content:\n{json_string}")
+        parsed_response = json.loads(json_string)
+
+        if isinstance(parsed_response, list):
+             petitions_list = parsed_response
+        elif isinstance(parsed_response, dict) and len(parsed_response) > 0:
+             potential_list = next((v for v in parsed_response.values() if isinstance(v, list)), None)
+             if potential_list is not None:
+                 petitions_list = potential_list
+             else:
+                 raise ValueError("JSON response is a dict, but no list found as a value.")
+        else:
+             raise ValueError("Unexpected JSON structure received from API.")
+
+        valid_petitions = []
+        required_keys = ["type", "subject", "details", "proposed_time", "proposed_location", "reasoning"]
+        for item in petitions_list:
+            if isinstance(item, dict) and all(key in item for key in required_keys):
+                valid_petitions.append(item)
+            else:
+                print(f"Warning: Petition object missing expected keys or not a dict: {item}")
+
+        print(f"--- OpenAI Call Successful. Valid Proposed Petitions: {json.dumps(valid_petitions, indent=2)} ---")
+        return valid_petitions
+
+    except Exception as e:
+        print(f"ERROR: OpenAI API call or processing failed: {e}")
+        raise
+
+# --- Routes ---
+
+@app.route('/')
+def index():
+    """Displays existing events. Requires login."""
+    if not current_user.is_authenticated:
+         flash('Please log in or sign up to view and propose events.', 'info')
+         return redirect(url_for('login'))
+
+    try:
+        # The query should now work correctly with the modified relationship
+        events = Event.query.options(
+            db.joinedload(Event.creator),
+            db.joinedload(Event.commitments).joinedload(Commitment.user) # Eager load commitments and their users
+        ).order_by(Event.created_at.desc()).all()
+    except Exception as e:
+        # Log the specific error if the query fails for other reasons
+        print(f"Error fetching events in index route: {e}")
+        flash("Error loading events. Please try again later.", "error")
+        events = [] # Ensure 'events' is an empty list if the query fails
+
+    return render_template('index.html', events=events)
+
+@app.route('/propose', methods=['GET', 'POST'])
+@login_required
+def propose_event_form():
+    """Handles the form for users to describe their desired event, calls LLM, and saves proposals."""
+    if request.method == 'POST':
+        classes = request.form.get('classes', '').strip()
+        availability = request.form.get('availability', '').strip()
+        purpose = request.form.get('purpose', '').strip()
+
+        if not availability or not purpose:
+             flash('Please describe the purpose and your availability.', 'error')
+             return render_template('propose_form.html', form_data=request.form)
+
+        student_input_data = {
+             "classes": classes,
+             "availability": availability,
+             "purpose": purpose
+         }
+
+        try:
+            user_identifier = current_user.name if current_user.name else current_user.email
+            proposed_events_data = call_openai_llm(student_input_data, user_identifier)
+
+            if not proposed_events_data:
+                flash('The AI could not generate any event suggestions based on your input. Try being more specific.', 'info')
+                return render_template('propose_form.html', form_data=request.form)
+
+            num_saved = 0
+            for event_data in proposed_events_data:
+                try:
+                    new_event = Event(
+                        user_id=current_user.id,
+                        subject=event_data.get('subject'),
+                        type=event_data.get('type'),
+                        proposed_time=event_data.get('proposed_time'),
+                        proposed_location=event_data.get('proposed_location'),
+                        details=event_data.get('details'),
+                        reasoning=event_data.get('reasoning'),
+                        status='proposed'
+                    )
+                    db.session.add(new_event)
+                    num_saved += 1
+                except Exception as e:
+                    print(f"Error creating event object from data {event_data}: {e}")
+                    flash(f"Warning: Could not process one of the AI suggestions.", "warning")
+
+            if num_saved > 0:
+                db.session.commit()
+                flash(f'{num_saved} new event proposal(s) created!', 'success')
+                return redirect(url_for('index'))
+            else:
+                flash('Could not save any AI suggestions. Please try again.', 'error')
+                return render_template('propose_form.html', form_data=request.form)
+
+        except ValueError as ve:
+            flash(f'Configuration Error: {ve}', 'error')
+        except Exception as e:
+            db.session.rollback()
+            flash(f'An unexpected error occurred: {e}', 'error')
+            print(f"Error in /propose POST route: {e}")
+
+        return render_template('propose_form.html', form_data=request.form)
+
+    # GET Request
+    return render_template('propose_form.html') # Render the actual form template on GET
+
+@app.route('/commit/<int:event_id>', methods=['POST'])
+@login_required
+def commit_to_event(event_id):
+    """Allows a logged-in user to commit to attending an event via AJAX POST request."""
+    event = db.session.get(Event, event_id) # Use newer db.session.get()
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+
+    existing_commitment = Commitment.query.filter_by(user_id=current_user.id, event_id=event_id).first()
+    if existing_commitment:
+        return jsonify({"error": "Already committed to this event"}), 409
+
+    try:
+        new_commitment = Commitment(user_id=current_user.id, event_id=event_id)
+        db.session.add(new_commitment)
+        db.session.commit()
+
+        # Reminder Simulation
+        user_contact = current_user.phone if current_user.phone else current_user.email
+        print(f"--- REMINDER SIMULATION ---")
+        print(f"User: {current_user.email} (ID: {current_user.id}) committed to Event: {event.subject} (ID: {event.id})")
+        print(f"Would send reminder to contact: {user_contact}")
+        print(f"--------------------------")
+
+        return jsonify({"message": "Successfully committed", "user_name": current_user.name or current_user.email}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error committing User {current_user.id} to Event {event_id}: {e}")
+        return jsonify({"error": "Database error during commitment. Please try again."}), 500
+
+# --- Authentication Routes ---
+# (No changes needed in signup, login, logout routes based on the error)
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip()
+        password = request.form.get('password')
+        confirm_password = request.form.get('confirm_password')
+        name = request.form.get('name', '').strip()
+        phone = request.form.get('phone', '').strip()
+        error = False
+        if not email or not password or not confirm_password:
+            flash('Please fill out all required fields (Email, Password, Confirm Password).', 'error'); error = True
+        if password != confirm_password:
+            flash('Passwords do not match.', 'error'); error = True
+        try:
+            valid_email = validate_email(email, check_deliverability=False).normalized
+        except EmailNotValidError as e:
+            flash(f"Invalid email address: {e}", 'error'); error = True; valid_email = None
+        if valid_email and db.session.get(User, {'email': valid_email}): # Check if email exists (using alternative to filter_by) - Note: session.get needs primary key usually, adjust if needed or use filter_by
+             # Revert to filter_by for simplicity here as get usually takes PK
+             if User.query.filter_by(email=valid_email).first():
+                 flash('Email address already registered. Please log in.', 'warning'); error = True
+        if error:
+            return render_template('signup.html', form_data=request.form)
+        new_user = User(email=valid_email, name=name, phone=phone)
+        new_user.set_password(password)
+        db.session.add(new_user)
+        try:
+            db.session.commit()
+            flash('Account created successfully! You are now logged in.', 'success')
+            login_user(new_user)
+            return redirect(url_for('index'))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Database error creating account. Please try again later.', 'error')
+            print(f"Error during signup commit: {e}")
+            return render_template('signup.html', form_data=request.form)
+    return render_template('signup.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip()
+        password = request.form.get('password')
+        remember = True if request.form.get('remember') else False
+        try:
+            valid_email = validate_email(email, check_deliverability=False).normalized
+        except EmailNotValidError:
+             flash('Invalid email format.', 'error')
+             return render_template('login.html', form_data=request.form)
+        user = User.query.filter_by(email=valid_email).first()
+        if not user or not user.check_password(password):
+            flash('Invalid email or password. Please try again.', 'error')
+            return render_template('login.html', form_data=request.form)
+        login_user(user, remember=remember)
+        flash('Logged in successfully.', 'success')
+        next_page = request.args.get('next')
+        if next_page and not next_page.startswith('/'): next_page = url_for('index') # Basic security check
+        return redirect(next_page or url_for('index'))
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('You have been logged out successfully.', 'success')
+    return redirect(url_for('login'))
+
+# --- Main Execution and DB Initialization ---
+if __name__ == '__main__':
+    with app.app_context():
+        print("Initializing database schema...")
+        db.create_all()
+        print("Database schema initialization complete.")
+    app.run(debug=True, port=5001)
+================================================================================
+
+File: templates/index.html
+
+{% extends "layout.html" %}
+
+{% block title %}Home / Events{% endblock %}
+
+{% block content %}
+    <h1>Upcoming IVC Meetups</h1>
+
+    <div class="event-list">
+        {% if events %}
+            {% for event in events %}
+                <div class="event-card" id="event-{{ event.id }}">
+                    <h3>
+                        {{ event.subject }}
+                        {% if event.type %}
+                            <span class="event-type">({{ event.type }})</span>
+                        {% endif %}
+                    </h3>
+                    <p>
+                        <strong>Time:</strong> {{ event.proposed_time }} <br>
+                        <strong>Location:</strong> {{ event.proposed_location }} <br>
+                        <strong>Details:</strong> {{ event.details }} <br>
+                        <strong>Proposed by:</strong> {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}
+                    </p>
+
+                    <div class="commit-section">
+                        <strong>Committed ({{ event.commitments.count() }}):</strong> {# Use .count() for dynamic query #}
+                        <span id="committed-list-{{ event.id }}">
+                            {% for commitment in event.commitments %}
+                                {{ commitment.user.name or commitment.user.email }}{% if not loop.last %}, {% endif %}
+                            {% else %}
+                                No one yet. Be the first!
+                            {% endfor %}
+                        </span>
+                    </div>
+
+                    {% if current_user.is_authenticated %}
+                        {# Check if current user is committed #}
+                        {% set user_committed = event.commitments.filter_by(user_id=current_user.id).first() %}
+
+                        {% if user_committed %}
+                            <button class="committed-btn" disabled>Committed</button>
+                        {% else %}
+                            <button class="commit-btn" data-event-id="{{ event.id }}">Commit to Attend</button>
+                        {% endif %}
+                    {% else %}
+                        <p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>
+                    {% endif %}
+                    <div class="commit-feedback" id="feedback-{{ event.id }}"></div> {# Unique ID for feedback #}
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No events proposed yet. Be the first to <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
+        {% endif %}
+    </div> {# End event-list #}
+
+{% endblock %}
+
+
+{% block scripts %}
+{# Script for handling the 'Commit' button clicks via AJAX #}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const eventList = document.querySelector('.event-list'); // Target container
+
+        if (eventList) {
+            eventList.addEventListener('click', async (event) => {
+                // Only act if a commit button was clicked
+                if (!event.target.classList.contains('commit-btn')) {
+                    return;
+                }
+
+                const button = event.target;
+                const eventId = button.getAttribute('data-event-id');
+                const eventCard = button.closest('.event-card');
+                const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
+                const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`);
+
+                button.disabled = true; // Disable button immediately
+                feedbackDiv.textContent = 'Processing...';
+                feedbackDiv.style.color = '#555';
+
+                try {
+                    const response = await fetch(`/commit/${eventId}`, {
+                        method: 'POST',
+                        headers: {
+                            'Accept': 'application/json', // Indicate we expect JSON back
+                            // No CSRF token needed without Flask-WTF
+                        }
+                    });
+
+                    const result = await response.json(); // Expecting JSON response
+
+                    if (response.ok && response.status === 201) { // 201 Created
+                        feedbackDiv.textContent = 'Successfully committed!';
+                        feedbackDiv.style.color = 'green';
+
+                        // Update button appearance
+                        button.textContent = 'Committed';
+                        button.classList.remove('commit-btn');
+                        button.classList.add('committed-btn');
+                        // Button remains disabled
+
+                        // Dynamically update the committed list (basic example)
+                        const userName = result.user_name || 'You'; // Use name from response
+                        if (committedListSpan) {
+                            const currentText = committedListSpan.textContent.trim();
+                            if (currentText.includes('No one yet')) {
+                                committedListSpan.textContent = userName;
+                            } else {
+                                committedListSpan.textContent += `, ${userName}`;
+                            }
+                            // Update the count (requires fetching count again or incrementing)
+                            const countStrong = committedListSpan.previousElementSibling; // The <strong> tag
+                            if(countStrong) {
+                                const currentCount = parseInt(countStrong.textContent.match(/\d+/)[0] || 0);
+                                countStrong.textContent = `Committed (${currentCount + 1}):`;
+                            }
+                        }
+
+                    } else {
+                         // Handle errors (like 409 Conflict or 500 Server Error)
+                         feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`;
+                         feedbackDiv.style.color = 'red';
+                         button.disabled = false; // Re-enable button on failure
+                    }
+                } catch (error) {
+                    console.error('Commit AJAX error:', error);
+                    feedbackDiv.textContent = 'An network error occurred. Please try again.';
+                    feedbackDiv.style.color = 'red';
+                    button.disabled = false; // Re-enable button on network error
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}
+================================================================================
+
+File: templates/layout.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}IVC Meetup Platform{% endblock %}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        nav {
+            background-color: #005c9e; /* IVC Blue */
+            padding: 0.75rem 1.5rem;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        nav ul li {
+            display: inline;
+        }
+        nav ul li a {
+            color: white;
+            text-decoration: none;
+            padding: 0.5rem 0;
+            transition: opacity 0.2s ease;
+        }
+        nav ul li a:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+        .nav-right {
+            margin-left: auto; /* Pushes login/logout links right */
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .container {
+            max-width: 960px;
+            margin: 2rem auto;
+            padding: 1.5rem;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        /* Flash Messages Styling */
+        .flash-messages { list-style: none; padding: 0; margin: 0 0 1.5rem 0; }
+        .flash-messages li { padding: 0.8rem 1.2rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid transparent; }
+        .flash-success { background-color: #d1e7dd; color: #0f5132; border-color: #badbcc; }
+        .flash-error { background-color: #f8d7da; color: #842029; border-color: #f5c2c7; }
+        .flash-info { background-color: #cff4fc; color: #055160; border-color: #b6effb; }
+        .flash-warning { background-color: #fff3cd; color: #664d03; border-color: #ffecb5; }
+
+        /* Basic Form Styling */
+        form label { display: block; margin-bottom: 0.3rem; font-weight: 600; font-size: 0.9em; }
+        form input[type="text"],
+        form input[type="email"],
+        form input[type="password"],
+        form input[type="tel"],
+        form textarea {
+            width: 100%; /* Use 100% width */
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            box-sizing: border-box; /* Include padding in width */
+            font-size: 1rem;
+        }
+        form textarea { min-height: 80px; resize: vertical; }
+        form button[type="submit"] {
+            background-color: #007bff;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background-color 0.2s ease;
+        }
+        form button[type="submit"]:hover { background-color: #0056b3; }
+        form input[type="checkbox"] { margin-right: 0.5rem; vertical-align: middle;}
+        form label[for="remember"] { display: inline; font-weight: normal; }
+
+        /* Event Card Styling */
+        .event-list { margin-top: 1.5rem; }
+        .event-card {
+            border: 1px solid #e1e4e8;
+            padding: 1.2rem;
+            margin-bottom: 1.5rem;
+            border-radius: 6px;
+            background-color: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            transition: box-shadow 0.2s ease;
+        }
+        .event-card:hover { box-shadow: 0 3px 8px rgba(0,0,0,0.08); }
+        .event-card h3 { margin-top: 0; margin-bottom: 0.5rem; font-size: 1.25rem; color: #005c9e; }
+        .event-card p { margin-bottom: 0.5rem; color: #555; line-height: 1.5; }
+        .event-card strong { color: #333; }
+        .event-card .event-type { font-size: 0.85em; color: #6c757d; font-weight: normal; margin-left: 0.5rem; }
+        .commit-section { margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid #eee; font-size: 0.9em; color: #555; }
+        .commit-section strong { display: block; margin-bottom: 0.3rem; }
+        .commit-btn, .committed-btn {
+            display: inline-block; /* Allows margin */
+            padding: 0.4rem 0.8rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-top: 0.5rem;
+            transition: background-color 0.2s ease, opacity 0.2s ease;
+            text-align: center;
+        }
+        .commit-btn { background-color: #28a745; color: white; }
+        .commit-btn:hover { background-color: #218838; }
+        .committed-btn { background-color: #6c757d; color: white; cursor: not-allowed; opacity: 0.7; }
+        .commit-feedback { font-size: 0.85em; margin-top: 0.5rem; min-height: 1.2em; /* Prevent layout shift */ }
+
+        h1, h2, h3 { color: #343a40; }
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <nav>
+        <ul>
+            <li><a href="{{ url_for('index') }}">Home / Events</a></li>
+            <li><a href="{{ url_for('propose_event_form') }}">Propose Event</a></li>
+            <li class="nav-right">
+                {% if current_user.is_authenticated %}
+                    <span>Hi, {{ current_user.name or current_user.email }}</span> |
+                    <a href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Login</a> |
+                    <a href="{{ url_for('signup') }}">Sign Up</a>
+                {% endif %}
+            </li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flash-messages">
+                {% for category, message in messages %}
+                    {# Map category to CSS class, default to info #}
+                    {% set category_map = {'error': 'error', 'success': 'success', 'warning': 'warning'} %}
+                    <li class="flash-{{ category_map.get(category, 'info') }}">{{ message }}</li>
+                {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}
+        {# Page-specific content will go here #}
+        {% endblock %}
+    </main>
+
+    {% block scripts %}
+    {# Page-specific scripts can go here #}
+    {% endblock %}
+</body>
+</html>
+================================================================================
+
+File: templates/login.html
+
+{% extends "layout.html" %}
+
+{% block title %}Login{% endblock %}
+
+{% block content %}
+    <h2>Login</h2>
+    <form method="POST" action="{{ url_for('login') }}">
+        {# Hidden input to potentially preserve 'next' URL if needed, handled in route #}
+        <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+
+        <div>
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required autofocus>
+        </div>
+        <div>
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+        <div>
+             <input type="checkbox" id="remember" name="remember" value="1"> {# Use value="1" #}
+             <label for="remember">Remember Me</label>
+        </div>
+        <button type="submit">Login</button>
+    </form>
+    <p style="margin-top: 1rem;">
+        Don't have an account? <a href="{{ url_for('signup') }}">Sign up here</a>
+    </p>
+{% endblock %}
+================================================================================
+
+File: templates/propose_form.html
+
+{% extends "layout.html" %}
+
+{% block title %}Propose an Event{% endblock %}
+
+{% block content %}
+    <h2>Propose a New Meetup Event</h2>
+    <p>Describe the event you want to organize. Our AI will attempt to suggest specific times and locations based on your input.</p>
+
+    <form method="POST" action="{{ url_for('propose_event_form') }}">
+        <div>
+            <label for="classes">Relevant Class(es) (Optional):</label>
+            <input type="text" id="classes" name="classes" value="{{ form_data.classes if form_data else '' }}" placeholder="e.g., MATH 1B, HIST 101">
+        </div>
+         <div>
+            <label for="purpose">Purpose / Activity:</label>
+            <textarea id="purpose" name="purpose" placeholder="e.g., 'Review Chapter 5 concepts', 'Work on final project', 'Casual board games hangout'" required>{{ form_data.purpose if form_data else '' }}</textarea>
+        </div>
+        <div>
+            <label for="availability">Your General Availability:</label>
+            <textarea id="availability" name="availability" placeholder="e.g., 'Mon/Wed afternoons after 2pm', 'Flexible on weekends', 'Tues evening'" required>{{ form_data.availability if form_data else '' }}</textarea>
+        </div>
+        <button type="submit">Generate Event Proposals</button>
+    </form>
+{% endblock %}
+================================================================================
+
+File: templates/signup.html
+
+{% extends "layout.html" %}
+
+{% block title %}Sign Up{% endblock %}
+
+{% block content %}
+    <h2>Sign Up</h2>
+    <form method="POST" action="{{ url_for('signup') }}">
+         <div>
+            <label for="name">Name (Optional):</label>
+            <input type="text" id="name" name="name" value="{{ form_data.name if form_data else '' }}">
+        </div>
+        <div>
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required>
+        </div>
+         <div>
+            <label for="phone">Phone (Optional, for simulated reminders):</label>
+            <input type="tel" id="phone" name="phone" value="{{ form_data.phone if form_data else '' }}" placeholder="e.g., 555-123-4567">
+        </div>
+        <div>
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+        <div>
+            <label for="confirm_password">Confirm Password:</label>
+            <input type="password" id="confirm_password" name="confirm_password" required>
+        </div>
+        <button type="submit">Sign Up</button>
+    </form>
+     <p style="margin-top: 1rem;">
+        Already have an account? <a href="{{ url_for('login') }}">Login here</a>
+    </p>
+{% endblock %}
+================================================================================
+

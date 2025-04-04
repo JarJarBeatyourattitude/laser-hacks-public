@@ -1,170 +1,139 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IVC Meetup Petition Generator</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            line-height: 1.6;
-            margin: 20px;
-            background-color: #f4f4f4;
-        }
-        .container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            max-width: 700px;
-            margin: auto;
-        }
-        h1, h2 {
-            color: #333;
-        }
-        form label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-        form input[type="text"],
-        form textarea {
-            width: 95%;
-            padding: 10px;
-            margin-bottom: 15px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        form textarea {
-            height: 80px;
-            resize: vertical;
-        }
-        form button {
-            background-color: #005c9e; /* IVC-ish blue */
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 1em;
-        }
-        form button:hover {
-            background-color: #004477;
-        }
-        #results {
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
-        }
-        #results pre {
-            background-color: #eee;
-            padding: 15px;
-            border-radius: 4px;
-            white-space: pre-wrap; /* Allows wrapping */
-            word-wrap: break-word; /* Breaks long words */
-            font-family: monospace;
-            font-size: 0.9em;
-        }
-        .loading-message {
-            display: none; /* Hidden by default */
-            color: #555;
-            font-style: italic;
-        }
-        .error-message {
-            color: red;
-            font-weight: bold;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>IVC Meetup Petition Idea Generator</h1>
-        <p>Enter your details, and the AI will suggest potential meetup times/ideas based on your input.</p>
+{% extends "layout.html" %}
 
-        <form id="student-form">
-            <div>
-                <label for="student-name">Your Name (Optional):</label>
-                <input type="text" id="student-name" name="student-name">
-            </div>
-            <div>
-                <label for="classes">Your IVC Classes:</label>
-                <input type="text" id="classes" name="classes" placeholder="e.g., MATH 2A, WR 1, CISP 12" required>
-            </div>
-            <div>
-                <label for="availability">Your General Availability:</label>
-                <textarea id="availability" name="availability" placeholder="Describe when you're usually free, e.g., 'Mon/Wed after 3 PM', 'Tues/Thurs mornings 9-11', 'Weekends flexible'" required></textarea>
-            </div>
-            <button type="submit">Generate Petition Ideas</button>
-        </form>
+{% block title %}Home / Events{% endblock %}
 
-        <div id="results">
-            <h2>Proposed Meetup Petitions:</h2>
-            <div id="loading" class="loading-message">Generating suggestions...</div>
-            <div id="error" class="error-message"></div>
-            <pre id="output">Enter your details above and click generate.</pre>
-        </div>
-    </div>
+{% block content %}
+    <h1>Upcoming IVC Meetups</h1>
 
-    <script>
-        const form = document.getElementById('student-form');
-        const outputElement = document.getElementById('output');
-        const loadingElement = document.getElementById('loading');
-        const errorElement = document.getElementById('error');
+    <div class="event-list">
+        {% if events %}
+            {% for event in events %}
+                <div class="event-card" id="event-{{ event.id }}">
+                    <h3>
+                        {{ event.subject }}
+                        {% if event.type %}
+                            <span class="event-type">({{ event.type }})</span>
+                        {% endif %}
+                    </h3>
+                    <p>
+                        <strong>Time:</strong> {{ event.proposed_time }} <br>
+                        <strong>Location:</strong> {{ event.proposed_location }} <br>
+                        <strong>Details:</strong> {{ event.details }} <br>
+                        <strong>Proposed by:</strong> {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}
+                    </p>
 
-        form.addEventListener('submit', async (event) => {
-            event.preventDefault(); // Prevent default page reload
+                    <div class="commit-section">
+                        {# Use |length filter for lists/collections #}
+                        <strong>Committed ({{ event.commitments|length }}):</strong>
+                        <span id="committed-list-{{ event.id }}">
+                            {% for commitment in event.commitments %}
+                                {{ commitment.user.name or commitment.user.email }}{% if not loop.last %}, {% endif %}
+                            {% else %}
+                                No one yet. Be the first!
+                            {% endfor %}
+                        </span>
+                    </div>
 
-            // Clear previous results and errors
-            outputElement.textContent = '';
-            errorElement.textContent = '';
-            loadingElement.style.display = 'block'; // Show loading indicator
+                    {% if current_user.is_authenticated %}
+                        {# Check if current user is committed #}
+                        {% set user_committed = false %}
+                        {% for c in event.commitments %}
+                            {% if c.user_id == current_user.id %}
+                                {% set user_committed = true %}
+                                {# FIXED: Removed unsupported 'break' tag #}
+                            {% endif %}
+                        {% endfor %}
 
-            const studentName = document.getElementById('student-name').value;
-            const classes = document.getElementById('classes').value;
-            const availability = document.getElementById('availability').value;
+                        {% if user_committed %}
+                            <button class="committed-btn" disabled>Committed</button>
+                        {% else %}
+                            <button class="commit-btn" data-event-id="{{ event.id }}">Commit to Attend</button>
+                        {% endif %}
+                    {% else %}
+                        <p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>
+                    {% endif %}
+                    <div class="commit-feedback" id="feedback-{{ event.id }}"></div> {# Unique ID for feedback #}
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No events proposed yet. Be the first to <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
+        {% endif %}
+    </div> {# End event-list #}
 
-            const studentData = {
-                name: studentName,
-                classes: classes,
-                availability: availability
-            };
+{% endblock %}
 
-            try {
-                const response = await fetch('/generate_petitions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(studentData),
-                });
 
-                loadingElement.style.display = 'none'; // Hide loading indicator
+{% block scripts %}
+{# Script for handling the 'Commit' button clicks via AJAX (Unchanged from previous correct version) #}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const eventList = document.querySelector('.event-list');
 
-                if (!response.ok) {
-                    // Try to get error message from response body
-                    let errorMsg = `HTTP error! status: ${response.status}`;
-                    try {
-                         const errData = await response.json();
-                         errorMsg = errData.error || JSON.stringify(errData);
-                    } catch(e) {
-                        // If response is not json or empty
-                        errorMsg += ` - ${response.statusText}`;
-                    }
-                    throw new Error(errorMsg);
+        if (eventList) {
+            eventList.addEventListener('click', async (event) => {
+                if (!event.target.classList.contains('commit-btn')) {
+                    return;
                 }
 
-                const petitions = await response.json();
+                const button = event.target;
+                const eventId = button.getAttribute('data-event-id');
+                const eventCard = button.closest('.event-card');
+                const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
+                const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`);
 
-                // Display results nicely formatted
-                outputElement.textContent = JSON.stringify(petitions, null, 2); // Pretty print JSON
+                button.disabled = true;
+                feedbackDiv.textContent = 'Processing...';
+                feedbackDiv.style.color = '#555';
 
-            } catch (error) {
-                console.error('Error submitting form:', error);
-                loadingElement.style.display = 'none'; // Hide loading on error too
-                errorElement.textContent = `Error: ${error.message}`;
-                outputElement.textContent = 'Failed to generate petitions. Check console for details.';
-            }
-        });
-    </script>
-</body>
-</html>
+                try {
+                    const response = await fetch(`/commit/${eventId}`, {
+                        method: 'POST',
+                        headers: {
+                            'Accept': 'application/json',
+                        }
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok && response.status === 201) {
+                        feedbackDiv.textContent = 'Successfully committed!';
+                        feedbackDiv.style.color = 'green';
+                        button.textContent = 'Committed';
+                        button.classList.remove('commit-btn');
+                        button.classList.add('committed-btn');
+
+                        // Dynamically update the committed list
+                        const userName = result.user_name || 'You';
+                        if (committedListSpan) {
+                            const currentText = committedListSpan.textContent.trim();
+                            const strongTag = committedListSpan.previousElementSibling;
+                            let currentCount = 0;
+                            if (strongTag && strongTag.textContent.includes('(')) {
+                                currentCount = parseInt(strongTag.textContent.match(/\d+/)[0] || 0);
+                            }
+
+                            if (currentText.includes('No one yet')) {
+                                committedListSpan.textContent = userName;
+                            } else {
+                                committedListSpan.textContent += `, ${userName}`;
+                            }
+                            if (strongTag) {
+                                strongTag.textContent = `Committed (${currentCount + 1}):`;
+                            }
+                        }
+                    } else {
+                         feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`;
+                         feedbackDiv.style.color = 'red';
+                         button.disabled = false;
+                    }
+                } catch (error) {
+                    console.error('Commit AJAX error:', error);
+                    feedbackDiv.textContent = 'An network error occurred. Please try again.';
+                    feedbackDiv.style.color = 'red';
+                    button.disabled = false;
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

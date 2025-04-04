@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}IVC Meetup Platform{% endblock %}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        nav {
+            background-color: #005c9e; /* IVC Blue */
+            padding: 0.75rem 1.5rem;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        nav ul li {
+            display: inline;
+        }
+        nav ul li a {
+            color: white;
+            text-decoration: none;
+            padding: 0.5rem 0;
+            transition: opacity 0.2s ease;
+        }
+        nav ul li a:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+        .nav-right {
+            margin-left: auto; /* Pushes login/logout links right */
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .container {
+            max-width: 960px;
+            margin: 2rem auto;
+            padding: 1.5rem;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        /* Flash Messages Styling */
+        .flash-messages { list-style: none; padding: 0; margin: 0 0 1.5rem 0; }
+        .flash-messages li { padding: 0.8rem 1.2rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid transparent; }
+        .flash-success { background-color: #d1e7dd; color: #0f5132; border-color: #badbcc; }
+        .flash-error { background-color: #f8d7da; color: #842029; border-color: #f5c2c7; }
+        .flash-info { background-color: #cff4fc; color: #055160; border-color: #b6effb; }
+        .flash-warning { background-color: #fff3cd; color: #664d03; border-color: #ffecb5; }
+
+        /* Basic Form Styling */
+        form label { display: block; margin-bottom: 0.3rem; font-weight: 600; font-size: 0.9em; }
+        form input[type="text"],
+        form input[type="email"],
+        form input[type="password"],
+        form input[type="tel"],
+        form textarea {
+            width: 100%; /* Use 100% width */
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            box-sizing: border-box; /* Include padding in width */
+            font-size: 1rem;
+        }
+        form textarea { min-height: 80px; resize: vertical; }
+        form button[type="submit"] {
+            background-color: #007bff;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background-color 0.2s ease;
+        }
+        form button[type="submit"]:hover { background-color: #0056b3; }
+        form input[type="checkbox"] { margin-right: 0.5rem; vertical-align: middle;}
+        form label[for="remember"] { display: inline; font-weight: normal; }
+
+        /* Event Card Styling */
+        .event-list { margin-top: 1.5rem; }
+        .event-card {
+            border: 1px solid #e1e4e8;
+            padding: 1.2rem;
+            margin-bottom: 1.5rem;
+            border-radius: 6px;
+            background-color: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            transition: box-shadow 0.2s ease;
+        }
+        .event-card:hover { box-shadow: 0 3px 8px rgba(0,0,0,0.08); }
+        .event-card h3 { margin-top: 0; margin-bottom: 0.5rem; font-size: 1.25rem; color: #005c9e; }
+        .event-card p { margin-bottom: 0.5rem; color: #555; line-height: 1.5; }
+        .event-card strong { color: #333; }
+        .event-card .event-type { font-size: 0.85em; color: #6c757d; font-weight: normal; margin-left: 0.5rem; }
+        .commit-section { margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid #eee; font-size: 0.9em; color: #555; }
+        .commit-section strong { display: block; margin-bottom: 0.3rem; }
+        .commit-btn, .committed-btn {
+            display: inline-block; /* Allows margin */
+            padding: 0.4rem 0.8rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-top: 0.5rem;
+            transition: background-color 0.2s ease, opacity 0.2s ease;
+            text-align: center;
+        }
+        .commit-btn { background-color: #28a745; color: white; }
+        .commit-btn:hover { background-color: #218838; }
+        .committed-btn { background-color: #6c757d; color: white; cursor: not-allowed; opacity: 0.7; }
+        .commit-feedback { font-size: 0.85em; margin-top: 0.5rem; min-height: 1.2em; /* Prevent layout shift */ }
+
+        h1, h2, h3 { color: #343a40; }
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <nav>
+        <ul>
+            <li><a href="{{ url_for('index') }}">Home / Events</a></li>
+            <li><a href="{{ url_for('propose_event_form') }}">Propose Event</a></li>
+            <li class="nav-right">
+                {% if current_user.is_authenticated %}
+                    <span>Hi, {{ current_user.name or current_user.email }}</span> |
+                    <a href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Login</a> |
+                    <a href="{{ url_for('signup') }}">Sign Up</a>
+                {% endif %}
+            </li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flash-messages">
+                {% for category, message in messages %}
+                    {# Map category to CSS class, default to info #}
+                    {% set category_map = {'error': 'error', 'success': 'success', 'warning': 'warning'} %}
+                    <li class="flash-{{ category_map.get(category, 'info') }}">{{ message }}</li>
+                {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}
+        {# Page-specific content will go here #}
+        {% endblock %}
+    </main>
+
+    {% block scripts %}
+    {# Page-specific scripts can go here #}
+    {% endblock %}
+</body>
+</html>
