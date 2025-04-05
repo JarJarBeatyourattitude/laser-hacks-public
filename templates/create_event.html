@@ -1,0 +1,42 @@
+{% extends "layout.html" %}
+
+{% block title %}Create Manual Event{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body">
+        <h2 class="card-title mb-4">Create a New Event Manually</h2>
+        <p class="card-text text-muted mb-4">Set the details for your meetup event directly.</p>
+
+        <form method="POST" action="{{ url_for('create_event') }}">
+            <div class="mb-3">
+                <label for="subject" class="form-label">Event Subject <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" id="subject" name="subject" value="{{ form_data.subject if form_data else '' }}" placeholder="e.g., Final Project Work Session" required>
+            </div>
+
+             <div class="mb-3">
+                <label for="type" class="form-label">Event Type</label>
+                <input type="text" class="form-control" id="type" name="type" value="{{ form_data.type if form_data else 'Study Session' }}" placeholder="e.g., Study Session, Workshop, Social">
+            </div>
+
+             <div class="mb-3">
+                <label for="location" class="form-label">Location <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" id="location" name="location" value="{{ form_data.location if form_data else '' }}" placeholder="e.g., IVC Library Room 210, Online via Zoom, Library Quad" required>
+            </div>
+
+             <div class="mb-3">
+                <label for="datetime" class="form-label">Date and Time <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" id="datetime" name="datetime" value="{{ form_data.datetime if form_data else '' }}" placeholder="YYYY-MM-DD HH:MM (e.g., 2025-05-15 14:30)" required>
+                 <div class="form-text">Use 24-hour format (e.g., 14:30 for 2:30 PM). Timezone assumed UTC if not specified.</div>
+            </div>
+
+            <div class="mb-3">
+                <label for="details" class="form-label">Details / Description</label>
+                <textarea class="form-control" id="details" name="details" rows="3" placeholder="Add any extra details about the event agenda, what to bring, etc.">{{ form_data.details if form_data else '' }}</textarea>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Create Event</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

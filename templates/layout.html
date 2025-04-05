@@ -9,81 +9,98 @@
 
     <style>
         /* Optional: Minor custom adjustments */
-        body { padding-top: 56px; background-color: #f8f9fa; }
-        .navbar { background-color: #005c9e !important; } /* IVC Blue */
-        .event-card, .committed-events-section, .filter-sort-controls { margin-bottom: 1.5rem; }
-        .comment-list { max-height: 250px; overflow-y: auto; font-size: 0.9em; }
-        .comment { padding-bottom: 0.5rem; margin-bottom: 0.5rem; border-bottom: 1px dashed #eee; }
-        .comment strong { color: #005c9e; }
-        .committed-events-section ul { list-style: none; padding-left: 0; }
-        .committed-events-section li { border-bottom: 1px solid #dee2e6; padding: 0.5rem 0; }
-        #calendar { min-height: 600px; }
+        body { padding-top: 56px; background-color: #f8f9fa; } /* [cite: 127, 275] */
+        .navbar { background-color: #005c9e !important; } /* IVC Blue [cite: 128, 276] */
+        .event-card, .committed-events-section, .filter-sort-controls { margin-bottom: 1.5rem; } /* [cite: 129, 277] */
+        .comment-list { max-height: 250px; overflow-y: auto; font-size: 0.9em; } /* [cite: 130, 278] */
+        .comment { padding-bottom: 0.5rem; margin-bottom: 0.5rem; border-bottom: 1px dashed #eee; } /* [cite: 131, 279] */
+        .comment strong { color: #005c9e; } /* [cite: 132, 280] */
+        .committed-events-section ul { list-style: none; padding-left: 0; } /* [cite: 133, 281] */
+        .committed-events-section li { border-bottom: 1px solid #dee2e6; padding: 0.5rem 0; } /* [cite: 134, 282] */
+        #calendar { min-height: 600px; } /* [cite: 135, 283] */
 
         /* NEW: Subtle hover effect for cards */
-        .event-card { transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out; }
+        .event-card { transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out; } /* [cite: 136, 284] */
         .event-card:hover {
             transform: translateY(-3px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1); /* [cite: 137, 285] */
         }
 
         /* Icon alignment helper */
-        .icon-text { display: inline-flex; align-items: center; gap: 0.35rem; }
-        .icon-text .bi { position: relative; top: -1px; /* Fine-tune vertical alignment */ }
+        .icon-text { display: inline-flex; align-items: center; gap: 0.35rem; } /* [cite: 138, 286] */
+        .icon-text .bi { position: relative; top: -1px; /* Fine-tune vertical alignment */ } /* [cite: 139, 287] */
 
         /* Badge styling */
-         .badge { font-size: 0.75em; padding: 0.3em 0.5em; }
+         .badge { font-size: 0.75em; padding: 0.3em 0.5em; } /* [cite: 140, 288] */
 
     </style>
   </head>
   <body>
 
     <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
-        {# Navbar content remains the same as previous version... #}
          <div class="container-fluid">
             <a class="navbar-brand" href="{{ url_for('index') }}">IVC Meetups</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-            <span class="navbar-toggler-icon"></span>
+                <span class="navbar-toggler-icon"></span>
             </button>
+            {# --- UPDATED Navbar --- #}
             <div class="collapse navbar-collapse" id="navbarNav">
-            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" aria-current="page" href="{{ url_for('index') }}">Event List</a> </li>
-                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'calendar_view' %}active{% endif %}" href="{{ url_for('calendar_view') }}">Calendar View</a> </li>
-                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'propose_event_form' %}active{% endif %}" href="{{ url_for('propose_event_form') }}">Propose Event</a> </li>
-            </ul>
-            <ul class="navbar-nav ms-auto">
-                {% if current_user.is_authenticated %}
-                <li class="nav-item dropdown">
-                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                        Hi, {{ current_user.name or current_user.email }}
-                    </a>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
-                        <li><a class="dropdown-item" href="{{ url_for('logout') }}">Logout</a></li>
-                    </ul>
-                </li>
-                {% else %}
-                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'login' %}active{% endif %}" href="{{ url_for('login') }}">Login</a> </li>
-                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'signup' %}active{% endif %}" href="{{ url_for('signup') }}">Sign Up</a> </li>
-                {% endif %}
-            </ul>
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" aria-current="page" href="{{ url_for('index') }}">Event List</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'calendar_view' %}active{% endif %}" href="{{ url_for('calendar_view') }}">Calendar View</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'create_event' %}active{% endif %}" href="{{ url_for('create_event') }}">Create Event</a>
+                    </li>
+                     {# Removed old Propose Event link #}
+                </ul>
+                <ul class="navbar-nav ms-auto">
+                    {% if current_user.is_authenticated %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            Hi, {{ current_user.name or current_user.email }}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+                            <li><a class="dropdown-item {% if request.endpoint == 'profile' %}active{% endif %}" href="{{ url_for('profile') }}">My Profile</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            {% if current_user.id == 1 %} {# Basic admin check example #}
+                            <li><a class="dropdown-item {% if request.endpoint == 'admin_page' %}active{% endif %}" href="{{ url_for('admin_page') }}">Admin Panel</a></li>
+                             <li><hr class="dropdown-divider"></li>
+                            {% endif %}
+                            <li><a class="dropdown-item" href="{{ url_for('logout') }}">Logout</a></li>
+                        </ul>
+                    </li>
+                    {% else %}
+                    <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'login' %}active{% endif %}" href="{{ url_for('login') }}">Login</a> </li>
+                    <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'signup' %}active{% endif %}" href="{{ url_for('signup') }}">Sign Up</a> </li>
+                    {% endif %}
+                </ul>
             </div>
+            {# --- END UPDATED Navbar --- #}
       </div>
     </nav>
 
     <main class="container mt-4">
-        {# Flash Messages (same logic, uses Bootstrap alerts)... #}
+        {# Flash Messages (uses Bootstrap alerts) #}
         {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %} {% for category, message in messages %}
-                {% set category_map = {'error': 'danger', 'success': 'success', 'warning': 'warning', 'info': 'info'} %}
-                <div class="alert alert-{{ category_map.get(category, 'info') }} alert-dismissible fade show" role="alert">
-                    {{ message }} <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                </div>
-            {% endfor %} {% endif %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    {% set category_map = {'error': 'danger', 'success': 'success', 'warning': 'warning', 'info': 'info'} %}
+                    <div class="alert alert-{{ category_map.get(category, 'info') }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
         {% endwith %}
 
         {% block content %} {# Page-specific content #} {% endblock %}
     </main>
 
-    <footer class="py-3 my-4 border-top text-center">
+     <footer class="py-3 my-4 border-top text-center">
         <span class="text-muted">IVC Meetup Platform | Hackathon Project</span>
     </footer>
 

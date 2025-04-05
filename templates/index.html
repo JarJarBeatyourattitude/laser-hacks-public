@@ -6,81 +6,55 @@
 
     {# Hero Image (Unchanged) #}
     <div class="hero-banner mb-4">
-        <img src="{{ url_for('static', filename='hero-banner.png') }}" class="img-fluid rounded shadow-sm" alt="IVC Meetups Banner">
-    </div>
+        <img src="{{ url_for('static', filename='hero-banner.png') }}" class="img-fluid rounded shadow-sm" alt="IVC Meetups Banner"> </div>
 
     {# User's Committed Events Section (Unchanged) #}
     {% if current_user.is_authenticated and committed_events %}
     <div class="committed-events-section alert alert-primary">
         <h2 class="h5"><i class="bi bi-calendar-check-fill"></i> Your Upcoming Committed Events</h2>
-        <ul class="list-unstyled mb-0">
-            {% for event in committed_events %}<li><a href="#event-{{ event.id }}" class="link-primary text-decoration-none"><i class="bi bi-dot"></i> <strong>{{ event.subject }}</strong></a>{% if event.type %}<span class="badge rounded-pill bg-info text-dark ms-1">{{ event.type }}</span>{% endif %} - <small class="text-muted">{% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d at %I:%M %p') }} at {{ event.proposed_location }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} - {{ event.proposed_location }}{% else %}Time/Location TBD{% endif %}</small></li>{% endfor %}
-        </ul>
+        <ul class="list-unstyled mb-0"> {% for event in committed_events %}<li><a href="#event-{{ event.id }}" class="link-primary text-decoration-none"><i class="bi bi-dot"></i> <strong>{{ event.subject }}</strong></a>{% if event.type %}<span class="badge rounded-pill bg-info text-dark ms-1">{{ event.type }}</span>{% endif %} - <small class="text-muted">{% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d at %I:%M %p') }} at {{ event.proposed_location }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} - {{ event.proposed_location }}{% else %}Time/Location TBD{% endif %}</small></li>{% endfor %} </ul>
     </div>
     {% endif %}
 
-    <h1 class="h3 mb-3">{{ 'All Proposed Meetups' if not filters.subject else 'Filtered Meetups' }}</h1>
-
-    {# Filter and Sort Form (Unchanged) #}
+    <h1 class="h3 mb-3">{{ 'All Proposed Meetups' if not filters.subject else 'Filtered Meetups' }}</h1> {# Filter and Sort Form (Unchanged) #}
     <div class="filter-sort-controls card card-body bg-light mb-4">
         <form method="GET" action="{{ url_for('index') }}">
-            <div class="row g-3 align-items-end">
-                 <div class="col-md-5"><label for="subject" class="form-label">Filter by Subject:</label><input type="text" class="form-control form-control-sm" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study"></div>
-                 <div class="col-md-4"><label for="sort_by" class="form-label">Sort by:</label><select id="sort_by" name="sort_by" class="form-select form-select-sm"><option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option><option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option><option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option></select></div>
-                 <div class="col-md-auto"><button type="submit" class="btn btn-primary btn-sm w-100">Apply</button></div>
+             <div class="row g-3 align-items-end"> <div class="col-md-5"><label for="subject" class="form-label">Filter by Subject:</label><input type="text" class="form-control form-control-sm" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study"></div>
+                 <div class="col-md-4"><label for="sort_by" class="form-label">Sort by:</label><select id="sort_by" name="sort_by" class="form-select form-select-sm"><option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option><option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option><option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option></select></div> <div class="col-md-auto"><button type="submit" class="btn btn-primary btn-sm w-100">Apply</button></div>
             </div>
-        </form>
-    </div>
+        </form> </div>
 
     {# Event List #}
     <div class="event-list row">
         {% if events %}
             {% for event in events %}
-                <div class="col-12 mb-4">
-                    <div class="card event-card h-100" id="event-{{ event.id }}">
-                        {# --- FIXED: Use dynamic image filename or fallback --- #}
-                        {% if event.image_filename %}
-                            <img src="{{ url_for('static', filename=event.image_filename) }}" class="card-img-top" alt="{{ event.subject }} Image" style="max-height: 200px; object-fit: cover;">
-                        {% else %}
-                            <img src="{{ url_for('static', filename='default-event-card.png') }}" class="card-img-top" alt="Default Event Image" style="max-height: 200px; object-fit: cover; opacity: 0.7;"> {# Slightly faded default #}
-                        {% endif %}
+                 <div class="col-12 mb-4"> <div class="card event-card h-100" id="event-{{ event.id }}">
+                        {# Use dynamic image filename or fallback #}
+                        {% if event.image_filename %} <img src="{{ url_for('static', filename=event.image_filename) }}" class="card-img-top" alt="{{ event.subject }} Image" style="max-height: 200px; object-fit: cover;"> {% else %}
+                            <img src="{{ url_for('static', filename='default-event-card.png') }}" class="card-img-top" alt="Default Event Image" style="max-height: 200px; object-fit: cover; opacity: 0.7;"> {% endif %}
 
                         <div class="card-body d-flex flex-column">
                             <div> {# Content #}
-                                <h3 class="card-title h5 mb-1">{{ event.subject }}</h3>
-                                {% if event.type %}<span class="badge rounded-pill bg-secondary fw-normal mb-2">{{ event.type }}</span>{% endif %}
-                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-calendar-event"></i> {% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} <span class="text-danger">(Time Parsing Failed)</span>{% else %} Time Not Specified {% endif %}</small></p>
-                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-geo-alt-fill"></i> {{ event.proposed_location }}</small></p>
-                                <p class="card-text mb-2"><small>{{ event.details }}</small></p>
-                                <p class="card-text text-muted border-top pt-2"><small><i class="bi bi-person-fill"></i> Proposed by: {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}</small></p>
+                                <h3 class="card-title h5 mb-1">{{ event.subject }}</h3> {% if event.type %}<span class="badge rounded-pill bg-secondary fw-normal mb-2">{{ event.type }}</span>{% endif %}
+                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-calendar-event"></i> {% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} <span class="text-danger">(Time Parsing Failed)</span>{% else %} Time Not Specified {% endif %}</small></p> <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-geo-alt-fill"></i> {{ event.proposed_location }}</small></p>
+                                <p class="card-text mb-2"><small>{{ event.details }}</small></p> <p class="card-text text-muted border-top pt-2"><small><i class="bi bi-person-fill"></i> Proposed by: {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}</small></p>
                             </div>
-                            {# Commit Section #}
-                            <div class="commit-section pt-2 mt-auto">
-                                <h6 class="icon-text"><i class="bi bi-people-fill"></i> Committed ({{ event.commitments|length }}):</h6>
-                                <p class="mb-2" id="committed-list-{{ event.id }}"><small>{% for c in event.commitments %}{{ c.user.name or c.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}</small></p>
-                                 {% if current_user.is_authenticated %}{% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}{% if user_committed %}<button class="btn btn-secondary btn-sm committed-btn" disabled><i class="bi bi-check-lg"></i> Committed</button>{% else %}<button class="btn btn-success btn-sm commit-btn" data-event-id="{{ event.id }}"><i class="bi bi-calendar-plus"></i> Commit</button>{% endif %}{% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
-                                <div class="commit-feedback mt-1" id="feedback-{{ event.id }}"></div>
-                            </div>
-                            {# Comments Section #}
+                             {# Commit Section #} <div class="commit-section pt-2 mt-auto"> <h6 class="icon-text"><i class="bi bi-people-fill"></i> Committed ({{ event.commitments|length }}):</h6>
+                                <p class="mb-2" id="committed-list-{{ event.id }}"><small>{% for c in event.commitments %}{{ c.user.name or c.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}</small></p> {% if current_user.is_authenticated %}{% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}{% if user_committed %}<button class="btn btn-secondary btn-sm committed-btn" disabled><i class="bi bi-check-lg"></i> Committed</button>{% else %}<button class="btn btn-success btn-sm commit-btn" data-event-id="{{ event.id }}"><i class="bi bi-calendar-plus"></i> Commit</button>{% endif %}{% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %} <div class="commit-feedback mt-1" id="feedback-{{ event.id }}"></div>
+                            </div> {# Comments Section #}
                             <div class="comments-section pt-3 mt-3 border-top">
-                                <h6 class="mb-3 icon-text"><i class="bi bi-chat-dots-fill"></i> Comments</h6>
-                                <div class="comment-list mb-3">
-                                    {% if event.comments %}{% for comment in event.comments %}<div class="comment"><strong><i class="bi bi-person-circle"></i> {{ comment.author.name or comment.author.email }}:</strong><span class="text-muted"> {{ comment.text }}</span><small class="d-block text-muted">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small></div>{% endfor %}
-                                    {% else %}<p><small>No comments yet.</small></p>{% endif %}
+                                <h6 class="mb-3 icon-text"><i class="bi bi-chat-dots-fill"></i> Comments</h6> <div class="comment-list mb-3">
+                                    {% if event.comments %}{% for comment in event.comments %}<div class="comment"><strong><i class="bi bi-person-circle"></i> {{ comment.author.name or comment.author.email }}:</strong><span class="text-muted"> {{ comment.text }}</span><small class="d-block text-muted">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small></div>{% endfor %} {% else %}<p><small>No comments yet.</small></p>{% endif %}
                                 </div>
-                                {% if current_user.is_authenticated %}
-                                    <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
-                                        <div class="input-group input-group-sm mb-2"><textarea name="comment_text" rows="1" placeholder="Add comment..." required class="form-control"></textarea><button type="submit" class="btn btn-outline-secondary"><i class="bi bi-send"></i> Post</button></div>
-                                    </form>
+                                 {% if current_user.is_authenticated %} <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
+                                        <div class="input-group input-group-sm mb-2"><textarea name="comment_text" rows="1" placeholder="Add comment..." required class="form-control"></textarea><button type="submit" class="btn btn-outline-secondary"><i class="bi bi-send"></i> Post</button></div> </form>
                                 {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
-                            </div>
-                        </div> {# End card-body #}
+                            </div> </div> {# End card-body #}
                     </div> {# End card #}
                 </div> {# End col #}
-            {% endfor %}
-        {% else %}
-            <div class="col-12"><div class="alert alert-warning" role="alert">No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}" class="alert-link">propose one</a>!</div></div>
-        {% endif %}
+            {% endfor %} {% else %}
+            {# --- FIXED: Changed url_for endpoint --- #}
+            <div class="col-12"><div class="alert alert-warning" role="alert">No events found. Try adjusting filters or <a href="{{ url_for('create_event') }}" class="alert-link">create one</a>!</div></div> {% endif %}
     </div> {# End event-list #}
 {% endblock %}
 
@@ -91,28 +65,29 @@
         const eventList = document.querySelector('.event-list');
         if (eventList) {
             eventList.addEventListener('click', async (event) => {
-                if (!event.target.classList.contains('commit-btn')) { return; }
+                if (!event.target.classList.contains('commit-btn')) { return; } /* [cite: 113, 261] */
                 const button = event.target; const eventId = button.getAttribute('data-event-id');
                 const eventCard = button.closest('.event-card'); const feedbackDiv = eventCard.querySelector(`#feedback-${eventId}`);
                 const committedListSpan = eventCard.querySelector(`#committed-list-${eventId}`); button.disabled = true;
                 feedbackDiv.textContent = 'Processing...'; feedbackDiv.style.color = '#555';
-                try {
+                try { /* [cite: 114, 262] */
                     const response = await fetch(`/commit/${eventId}`, { method: 'POST', headers: {'Accept': 'application/json'} });
-                    const result = await response.json();
+                    const result = await response.json(); /* [cite: 115, 263] */
                     if (response.ok && response.status === 201) {
-                        feedbackDiv.textContent = 'Committed!'; feedbackDiv.style.color = 'green'; button.textContent = 'Committed';
+                        feedbackDiv.textContent = 'Committed!';
+                        feedbackDiv.style.color = 'green'; button.textContent = 'Committed'; /* [cite: 116, 264] */
                         button.classList.remove('commit-btn'); button.classList.add('committed-btn');
                         const userName = result.user_name || 'You';
-                        if (committedListSpan) {
-                            const currentText = committedListSpan.textContent.trim(); const strongTag = committedListSpan.previousElementSibling;
+                        if (committedListSpan) { /* [cite: 117, 265] */
+                            const currentText = committedListSpan.textContent.trim();
+                            const strongTag = committedListSpan.previousElementSibling; /* [cite: 118, 266] */
                             let currentCount = 0; if (strongTag && strongTag.textContent.includes('(')) { currentCount = parseInt(strongTag.textContent.match(/\d+/)[0] || 0); }
                             if (currentText.includes('No one yet')) { committedListSpan.textContent = userName; } else { committedListSpan.textContent += `, ${userName}`; }
                             if (strongTag) { strongTag.textContent = `Committed (${currentCount + 1}):`; }
-                        }
+                        } /* [cite: 119, 267] */
                     } else { feedbackDiv.textContent = `Error: ${result.error || 'Could not commit'}`; feedbackDiv.style.color = 'red'; button.disabled = false; }
                 } catch (error) { console.error('Commit AJAX error:', error); feedbackDiv.textContent = 'Network error.'; feedbackDiv.style.color = 'red'; button.disabled = false; }
-            });
+             }); /* [cite: 120, 268] */
         }
     });
-</script>
-{% endblock %}
+</script> {% endblock %}

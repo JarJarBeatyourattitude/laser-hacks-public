@@ -1,0 +1,25 @@
+{% extends "layout.html" %}
+
+{% block title %}Admin Panel{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body">
+        <h2 class="card-title mb-4">Admin Controls</h2>
+
+        <div class="alert alert-info">
+            <h4 class="alert-heading">Generate Weekly Schedule</h4>
+            <p>Click the button below to trigger the AI scheduling process. This will analyze all users' availability and subject preferences to create potential study group events for the upcoming week.</p>
+            <hr>
+             <p class="mb-0">Note: This process can take a minute or two, depending on the number of users and AI response time. Events created will be visible on the main event list.</p>
+        </div>
+
+        <form method="POST" action="{{ url_for('trigger_schedule') }}">
+            <button type="submit" class="btn btn-warning btn-lg">
+                <i class="bi bi-magic"></i> Run AI Weekly Scheduler
+            </button>
+        </form>
+
+    </div>
+</div>
+{% endblock %}
