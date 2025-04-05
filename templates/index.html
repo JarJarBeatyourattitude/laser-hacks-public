@@ -4,101 +4,85 @@
 
 {% block content %}
 
-    {# --- NEW: User's Committed Events Section --- #}
+    {# Hero Image (Unchanged) #}
+    <div class="hero-banner mb-4">
+        <img src="{{ url_for('static', filename='hero-banner.png') }}" class="img-fluid rounded shadow-sm" alt="IVC Meetups Banner">
+    </div>
+
+    {# User's Committed Events Section (Unchanged) #}
     {% if current_user.is_authenticated and committed_events %}
-    <div class="committed-events-section" style="margin-bottom: 30px; padding: 15px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 5px;">
-        <h2>Your Upcoming Committed Events</h2>
-        <ul style="list-style: none; padding: 0;">
-            {% for event in committed_events %}
-                <li style="margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #d0e5ff;">
-                    {# Link to the main event card using anchor #}
-                    <a href="#event-{{ event.id }}" style="font-weight: bold;">{{ event.subject }}</a>
-                    {% if event.type %}<span class="event-type" style="font-size: 0.9em;">({{ event.type }})</span>{% endif %}
-                    <br>
-                    <small>
-                        {% if event.proposed_datetime %}
-                            {{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }} - {{ event.proposed_location }}
-                        {% elif event.proposed_time_string %}
-                            {{ event.proposed_time_string }} - {{ event.proposed_location }} <span style="color:#cc0000;">(Time needs confirmation)</span>
-                        {% else %}
-                            Time/Location pending
-                        {% endif %}
-                    </small>
-                </li>
-            {% endfor %}
+    <div class="committed-events-section alert alert-primary">
+        <h2 class="h5"><i class="bi bi-calendar-check-fill"></i> Your Upcoming Committed Events</h2>
+        <ul class="list-unstyled mb-0">
+            {% for event in committed_events %}<li><a href="#event-{{ event.id }}" class="link-primary text-decoration-none"><i class="bi bi-dot"></i> <strong>{{ event.subject }}</strong></a>{% if event.type %}<span class="badge rounded-pill bg-info text-dark ms-1">{{ event.type }}</span>{% endif %} - <small class="text-muted">{% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d at %I:%M %p') }} at {{ event.proposed_location }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} - {{ event.proposed_location }}{% else %}Time/Location TBD{% endif %}</small></li>{% endfor %}
         </ul>
     </div>
     {% endif %}
-    {# --- End Committed Events Section --- #}
 
-
-    <h1>{{ 'All Proposed Meetups' if not filters.subject else 'Filtered Meetups' }}</h1>
+    <h1 class="h3 mb-3">{{ 'All Proposed Meetups' if not filters.subject else 'Filtered Meetups' }}</h1>
 
     {# Filter and Sort Form (Unchanged) #}
-    <div class="filter-sort-controls" style="background-color: #f1f1f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-        <form method="GET" action="{{ url_for('index') }}" style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-             <div><label for="subject" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Filter by Subject:</label><input type="text" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study" style="padding: 8px; font-size: 0.9em; width: 200px;"></div>
-             <div><label for="sort_by" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Sort by:</label><select id="sort_by" name="sort_by" style="padding: 8px; font-size: 0.9em;"><option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option><option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option><option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option></select></div>
-             <div><button type="submit" style="padding: 8px 15px; font-size: 0.9em; margin-top: 18px;">Apply</button></div>
-         </form>
-     </div>
+    <div class="filter-sort-controls card card-body bg-light mb-4">
+        <form method="GET" action="{{ url_for('index') }}">
+            <div class="row g-3 align-items-end">
+                 <div class="col-md-5"><label for="subject" class="form-label">Filter by Subject:</label><input type="text" class="form-control form-control-sm" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study"></div>
+                 <div class="col-md-4"><label for="sort_by" class="form-label">Sort by:</label><select id="sort_by" name="sort_by" class="form-select form-select-sm"><option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option><option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option><option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option></select></div>
+                 <div class="col-md-auto"><button type="submit" class="btn btn-primary btn-sm w-100">Apply</button></div>
+            </div>
+        </form>
+    </div>
 
     {# Event List #}
-    <div class="event-list">
+    <div class="event-list row">
         {% if events %}
             {% for event in events %}
-                <div class="event-card" id="event-{{ event.id }}"> {# Existing anchor target #}
-                    <h3>{{ event.subject }}{% if event.type %}<span class="event-type">({{ event.type }})</span>{% endif %}</h3>
-                    <p>
-                        <strong>Time:</strong>
-                        {% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} <small>(Could not parse date)</small>{% else %}Not specified{% endif %}<br>
-                        <strong>Location:</strong> {{ event.proposed_location }} <br>
-                        <strong>Details:</strong> {{ event.details }} <br>
-                        <strong>Proposed by:</strong> {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}
-                    </p>
+                <div class="col-12 mb-4">
+                    <div class="card event-card h-100" id="event-{{ event.id }}">
+                        {# --- FIXED: Use dynamic image filename or fallback --- #}
+                        {% if event.image_filename %}
+                            <img src="{{ url_for('static', filename=event.image_filename) }}" class="card-img-top" alt="{{ event.subject }} Image" style="max-height: 200px; object-fit: cover;">
+                        {% else %}
+                            <img src="{{ url_for('static', filename='default-event-card.png') }}" class="card-img-top" alt="Default Event Image" style="max-height: 200px; object-fit: cover; opacity: 0.7;"> {# Slightly faded default #}
+                        {% endif %}
 
-                    {# Commit Section #}
-                    <div class="commit-section">
-                        <strong>Committed ({{ event.commitments|length }}):</strong>
-                        <span id="committed-list-{{ event.id }}">{% for c in event.commitments %}{{ c.user.name or c.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}</span>
-                        <div style="margin-top: 10px;">
-                             {% if current_user.is_authenticated %}
-                                {% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}
-                                {% if user_committed %}<button class="committed-btn" disabled>Committed</button>{% else %}<button class="commit-btn" data-event-id="{{ event.id }}">Commit</button>{% endif %}
-                             {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
-                            <div class="commit-feedback" id="feedback-{{ event.id }}"></div>
-                        </div>
-                    </div>
-
-                    {# Comments Section #}
-                    <div class="comments-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
-                        <h4>Comments</h4>
-                        <div class="comment-list" style="margin-bottom: 15px; max-height: 200px; overflow-y: auto; font-size: 0.9em;">
-                            {% if event.comments %} {# Use relationship directly - ordered by definition #}
-                                {% for comment in event.comments %}
-                                    <div class="comment" style="margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px dashed #f0f0f0;">
-                                        <strong>{{ comment.author.name or comment.author.email }}:</strong>
-                                        <span style="color: #444;">{{ comment.text }}</span>
-                                        <small style="display: block; color: #888; font-size: 0.8em;">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small>
-                                    </div>
-                                {% endfor %}
-                            {% else %}<p><small>No comments yet.</small></p>{% endif %}
-                        </div>
-                        {% if current_user.is_authenticated %}
-                            <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
-                                <textarea name="comment_text" rows="2" placeholder="Add comment..." required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 5px; box-sizing: border-box; font-size: 0.9em;"></textarea>
-                                <button type="submit" style="padding: 5px 10px; font-size: 0.9em;">Post</button>
-                            </form>
-                        {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
-                    </div>
-                </div> {# End event-card #}
+                        <div class="card-body d-flex flex-column">
+                            <div> {# Content #}
+                                <h3 class="card-title h5 mb-1">{{ event.subject }}</h3>
+                                {% if event.type %}<span class="badge rounded-pill bg-secondary fw-normal mb-2">{{ event.type }}</span>{% endif %}
+                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-calendar-event"></i> {% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} <span class="text-danger">(Time Parsing Failed)</span>{% else %} Time Not Specified {% endif %}</small></p>
+                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-geo-alt-fill"></i> {{ event.proposed_location }}</small></p>
+                                <p class="card-text mb-2"><small>{{ event.details }}</small></p>
+                                <p class="card-text text-muted border-top pt-2"><small><i class="bi bi-person-fill"></i> Proposed by: {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}</small></p>
+                            </div>
+                            {# Commit Section #}
+                            <div class="commit-section pt-2 mt-auto">
+                                <h6 class="icon-text"><i class="bi bi-people-fill"></i> Committed ({{ event.commitments|length }}):</h6>
+                                <p class="mb-2" id="committed-list-{{ event.id }}"><small>{% for c in event.commitments %}{{ c.user.name or c.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}</small></p>
+                                 {% if current_user.is_authenticated %}{% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}{% if user_committed %}<button class="btn btn-secondary btn-sm committed-btn" disabled><i class="bi bi-check-lg"></i> Committed</button>{% else %}<button class="btn btn-success btn-sm commit-btn" data-event-id="{{ event.id }}"><i class="bi bi-calendar-plus"></i> Commit</button>{% endif %}{% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
+                                <div class="commit-feedback mt-1" id="feedback-{{ event.id }}"></div>
+                            </div>
+                            {# Comments Section #}
+                            <div class="comments-section pt-3 mt-3 border-top">
+                                <h6 class="mb-3 icon-text"><i class="bi bi-chat-dots-fill"></i> Comments</h6>
+                                <div class="comment-list mb-3">
+                                    {% if event.comments %}{% for comment in event.comments %}<div class="comment"><strong><i class="bi bi-person-circle"></i> {{ comment.author.name or comment.author.email }}:</strong><span class="text-muted"> {{ comment.text }}</span><small class="d-block text-muted">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small></div>{% endfor %}
+                                    {% else %}<p><small>No comments yet.</small></p>{% endif %}
+                                </div>
+                                {% if current_user.is_authenticated %}
+                                    <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
+                                        <div class="input-group input-group-sm mb-2"><textarea name="comment_text" rows="1" placeholder="Add comment..." required class="form-control"></textarea><button type="submit" class="btn btn-outline-secondary"><i class="bi bi-send"></i> Post</button></div>
+                                    </form>
+                                {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
+                            </div>
+                        </div> {# End card-body #}
+                    </div> {# End card #}
+                </div> {# End col #}
             {% endfor %}
         {% else %}
-             <p>No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
+            <div class="col-12"><div class="alert alert-warning" role="alert">No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}" class="alert-link">propose one</a>!</div></div>
         {% endif %}
     </div> {# End event-list #}
 {% endblock %}
-
 
 {% block scripts %}
 {# Commit Button AJAX Script (Unchanged) #}

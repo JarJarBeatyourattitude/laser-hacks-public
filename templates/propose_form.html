@@ -3,22 +3,26 @@
 {% block title %}Propose an Event{% endblock %}
 
 {% block content %}
-    <h2>Propose a New Meetup Event</h2>
-    <p>Describe the event you want to organize. Our AI will attempt to suggest specific times and locations based on your input.</p>
+<div class="card">
+    <div class="card-body">
+        <h2 class="card-title mb-3">Propose a New Meetup Event</h2>
+        <p class="card-text text-muted mb-4">Describe the event you want to organize. Our AI will attempt to suggest specific times and locations based on your input.</p>
 
-    <form method="POST" action="{{ url_for('propose_event_form') }}">
-        <div>
-            <label for="classes">Relevant Class(es) (Optional):</label>
-            <input type="text" id="classes" name="classes" value="{{ form_data.classes if form_data else '' }}" placeholder="e.g., MATH 1B, HIST 101">
-        </div>
-         <div>
-            <label for="purpose">Purpose / Activity:</label>
-            <textarea id="purpose" name="purpose" placeholder="e.g., 'Review Chapter 5 concepts', 'Work on final project', 'Casual board games hangout'" required>{{ form_data.purpose if form_data else '' }}</textarea>
-        </div>
-        <div>
-            <label for="availability">Your General Availability:</label>
-            <textarea id="availability" name="availability" placeholder="e.g., 'Mon/Wed afternoons after 2pm', 'Flexible on weekends', 'Tues evening'" required>{{ form_data.availability if form_data else '' }}</textarea>
-        </div>
-        <button type="submit">Generate Event Proposals</button>
-    </form>
+        <form method="POST" action="{{ url_for('propose_event_form') }}">
+            <div class="mb-3">
+                <label for="classes" class="form-label">Relevant Class(es) (Optional)</label>
+                <input type="text" class="form-control" id="classes" name="classes" value="{{ form_data.classes if form_data else '' }}" placeholder="e.g., MATH 1B, HIST 101">
+            </div>
+             <div class="mb-3">
+                <label for="purpose" class="form-label">Purpose / Activity <span class="text-danger">*</span></label>
+                <textarea class="form-control" id="purpose" name="purpose" placeholder="e.g., 'Review Chapter 5 concepts', 'Work on final project', 'Casual board games hangout'" required>{{ form_data.purpose if form_data else '' }}</textarea>
+            </div>
+            <div class="mb-3">
+                <label for="availability" class="form-label">Your General Availability <span class="text-danger">*</span></label>
+                <textarea class="form-control" id="availability" name="availability" placeholder="e.g., 'Mon/Wed afternoons after 2pm', 'Flexible on weekends', 'Tues evening'" required>{{ form_data.availability if form_data else '' }}</textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Generate Event Proposals</button>
+        </form>
+    </div>
+</div>
 {% endblock %}

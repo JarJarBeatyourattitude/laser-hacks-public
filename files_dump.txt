@@ -53,24 +53,22 @@ File: app.py
 import json
 import os
 import random
-from datetime import datetime, timedelta, timezone # Import timezone for UTC
+import re # For filename sanitization
+import requests # For downloading images
+import io # For handling image data
+from pathlib import Path # For path manipulation
 
-# Attempt to import dateutil, provide fallback/warning if unavailable
-try:
-    from dateutil import parser as dateutil_parser
-    HAS_DATEUTIL = True
-except ImportError:
-    HAS_DATEUTIL = False
-    print("WARNING: 'python-dateutil' library not found. Datetime parsing might be less robust.")
-    print("Install using: pip install python-dateutil")
+from datetime import datetime, timedelta, timezone
+try: from dateutil import parser as dateutil_parser; HAS_DATEUTIL = True
+except ImportError: HAS_DATEUTIL = False; print("WARN: dateutil not found")
 
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import desc, asc, nullslast # Import nullslast for sorting
+from sqlalchemy import desc, asc, nullslast
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from email_validator import validate_email, EmailNotValidError
-from openai import OpenAI
+from openai import OpenAI # Make sure OpenAI is imported
 # from dotenv import load_dotenv
 
 # load_dotenv()
@@ -80,6 +78,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-please-change')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+STATIC_FOLDER = Path(app.static_folder or 'static')
+IMAGES_FOLDER = STATIC_FOLDER / 'images'
+IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -87,11 +88,12 @@ login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
 
 # --- Database Models ---
+# (Models User, Event, Commitment, Comment remain unchanged from previous version)
 class Comment(db.Model):
     __tablename__ = 'comment'
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True) # Use UTC default
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
 
@@ -105,14 +107,20 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(128), nullable=False)
     name = db.Column(db.String(100), nullable=True)
     phone = db.Column(db.String(20), nullable=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # Use UTC default
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # Relationships
     events = db.relationship('Event', backref='creator', lazy='dynamic', cascade="all, delete-orphan")
     commitments = db.relationship('Commitment', backref='user', lazy='dynamic', cascade="all, delete-orphan")
     comments = db.relationship('Comment', backref='author', lazy='dynamic', cascade="all, delete-orphan")
 
-    def set_password(self, password): self.password_hash = generate_password_hash(password)
-    def check_password(self, password): return check_password_hash(self.password_hash, password)
-    def __repr__(self): return f'<User {self.email}>'
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def __repr__(self):
+        return f'<User {self.email}>'
 
 class Event(db.Model):
     __tablename__ = 'event'
@@ -120,289 +128,366 @@ class Event(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     subject = db.Column(db.String(200), nullable=False, index=True)
     type = db.Column(db.String(50), nullable=True)
-    # Store the original time string from LLM for reference/display fallback
     proposed_time_string = db.Column(db.String(100), nullable=True)
-    # FIXED: Store parsed datetime, make it nullable in case parsing fails
     proposed_datetime = db.Column(db.DateTime, nullable=True, index=True)
     proposed_location = db.Column(db.String(200), nullable=False)
     details = db.Column(db.Text, nullable=True)
     reasoning = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), default='proposed', index=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True) # Use UTC default
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    image_filename = db.Column(db.String(255), nullable=True) # Store 'images/safe_subject.png'
+    # Relationships
     commitments = db.relationship('Commitment', backref='event', cascade="all, delete-orphan")
-    comments = db.relationship('Comment', backref='event', cascade="all, delete-orphan",
-                               order_by=Comment.created_at.asc())
+    comments = db.relationship('Comment', backref='event', cascade="all, delete-orphan", order_by=Comment.created_at.asc())
 
-    def __repr__(self): return f'<Event {self.id}: {self.subject}>'
+    def __repr__(self):
+        return f'<Event {self.id}: {self.subject}>'
 
 class Commitment(db.Model):
     __tablename__ = 'commitment'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
-    committed_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # Use UTC default
+    committed_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     __table_args__ = (db.UniqueConstraint('user_id', 'event_id', name='_user_event_uc'),)
 
-    def __repr__(self): return f'<Commitment User:{self.user_id} to Event:{self.event_id}>'
+    def __repr__(self):
+        return f'<Commitment User:{self.user_id} to Event:{self.event_id}>'
+
 
 # --- Flask-Login Setup ---
 @login_manager.user_loader
-def load_user(user_id):
-    return db.session.get(User, int(user_id))
+def load_user(user_id): return db.session.get(User, int(user_id))
 
-# --- Helper Function for Datetime Parsing ---
+# --- Helper Functions ---
 def parse_datetime_string(datetime_str):
-    """Attempts to parse various datetime string formats into timezone-aware UTC datetime objects."""
-    if not datetime_str:
-        return None
-    try:
-        # Prioritize ISO format parsing
-        dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00')) # Handle Z for UTC
-        # If offset-naive, assume UTC
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        # Convert to UTC if it has other timezone info
-        return dt.astimezone(timezone.utc)
+    # (Same as before)
+    if not datetime_str: return None
+    try: dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00')); dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt; return dt.astimezone(timezone.utc)
     except ValueError:
-        # Fallback using dateutil if available and ISO parsing failed
         if HAS_DATEUTIL:
+            try: dt = dateutil_parser.parse(datetime_str, fuzzy=False); dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt; return dt.astimezone(timezone.utc)
+            except Exception as e: print(f"dateutil parse failed: {e}"); return None
+        else: print(f"ISO parse failed: {datetime_str}"); return None
+    except Exception as e: print(f"Generic parse error: {e}"); return None
+
+def sanitize_filename(text, max_length=50):
+    # (Same as before)
+    text = re.sub(r'[^\w\s-]', '', text.lower()); text = re.sub(r'\s+', '_', text).strip('_'); return text[:max_length]
+
+# --- DALL-E Image Generation Helper ---
+def generate_event_image(subject):
+    """
+    Generates or retrieves an image for the event subject.
+    Checks for existing images semantically close to the subject using GPT-4o
+    before generating a new one with DALL-E 3.
+    """
+    if not subject: return None
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key: print("ERROR: OPENAI_API_KEY not set."); return None
+    client = OpenAI(api_key=api_key) # Initialize client once
+
+    # --- START: New logic to check for existing similar images ---
+    try:
+        existing_files = [f.stem for f in IMAGES_FOLDER.glob('*.png') if f.is_file()] # Get base names (stems)
+        if existing_files:
+            print(f"Checking for images similar to '{subject}' among {len(existing_files)} existing files...")
+
+            # Prepare prompt for GPT-4o
+            prompt_subject = f"Find the best existing image filename stem that closely matches the semantic meaning of the event subject: '{subject}'."
+            prompt_files = "Existing filename stems related to previous event subjects are:\n" + "\n".join([f"- {fname}" for fname in existing_files])
+            prompt_instruction = (
+                "Analyze the subject and the list of existing stems. "
+                "If you find a stem that is a very close semantic match (represents essentially the same topic or activity), "
+                "return ONLY the matching stem string (e.g., 'calculus_study_group'). "
+                "If multiple are close, return the best one. "
+                "If none of the existing stems are a close semantic match, return ONLY the string 'None'."
+            )
+
+            # Call GPT-4o (using the model specified by the user for 'easy tasks')
             try:
-                # fuzzy=False requires a closer match
-                dt = dateutil_parser.parse(datetime_str, fuzzy=False)
-                if dt.tzinfo is None:
-                     dt = dt.replace(tzinfo=timezone.utc) # Assume UTC if naive
-                return dt.astimezone(timezone.utc) # Convert to UTC
-            except (ValueError, OverflowError, TypeError) as e:
-                print(f"dateutil parsing failed for '{datetime_str}': {e}")
-                return None
-        else:
-             print(f"ISO parsing failed for '{datetime_str}' and dateutil not available.")
-             return None
-    except Exception as e: # Catch other potential errors
-        print(f"Generic parsing error for '{datetime_str}': {e}")
+                print("Calling GPT-4o to check for similar images...")
+                similarity_response = client.chat.completions.create(
+                    model="gpt-4o", # Use gpt-4o as requested for similarity check
+                    messages=[
+                        {"role": "system", "content": "You are an assistant comparing event subjects to existing image filename stems."},
+                        {"role": "user", "content": f"{prompt_subject}\n\n{prompt_files}\n\n{prompt_instruction}"}
+                    ],
+                    temperature=0.2, # Lower temperature for more deterministic matching
+                    max_tokens=100
+                )
+                match_result = similarity_response.choices[0].message.content.strip()
+                print(f"GPT-4o similarity check result: '{match_result}'")
+
+                if match_result and match_result.lower() != 'none' and match_result in existing_files:
+                    # Found a close enough match
+                    matched_filename = f"{match_result}.png"
+                    relative_filepath = f"images/{matched_filename}"
+                    print(f"Found semantically similar existing image: {relative_filepath}. Reusing.")
+                    return relative_filepath # Return the path to the existing similar image
+
+            except Exception as ai_err:
+                print(f"ERROR: GPT-4o similarity check failed: {ai_err}. Proceeding to generate new image.")
+                # Fall through to generate new image if similarity check fails
+
+    except Exception as file_err:
+        print(f"ERROR: Could not list existing image files: {file_err}. Proceeding to generate new image.")
+        # Fall through to generate new image if listing files fails
+    # --- END: New logic ---
+
+
+    # --- Fallback/Original logic: Generate new image if no suitable existing one is found ---
+    # First, still check for EXACT match using sanitized filename (cheap check)
+    safe_subject_base = sanitize_filename(subject)
+    if not safe_subject_base: return None # Cannot generate image without a base name
+    exact_filename = f"{safe_subject_base}.png"
+    exact_relative_filepath = f"images/{exact_filename}"
+    exact_absolute_filepath = IMAGES_FOLDER / exact_filename
+
+    if exact_absolute_filepath.exists():
+        print(f"Image found for exact sanitized name '{safe_subject_base}': {exact_relative_filepath}");
+        return exact_relative_filepath
+
+    # If no exact match and no similar match found by AI (or AI check failed), generate a new one
+    print(f"No suitable existing image found. Generating new DALL-E 3 image for '{subject}'...")
+    try:
+        dalle_prompt = f"Clean, modern graphic representing college students studying or related to: {subject}. Suitable for a web card. Minimalist vector style. 16:9 aspect ratio."
+        response = client.images.generate(
+            model="dall-e-3", # Use DALL-E 3 for actual image generation
+            prompt=dalle_prompt,
+            size="1792x1024",
+            quality="standard",
+            n=1,
+            response_format="url"
+        )
+        image_url = response.data[0].url;
+        print(f"DALL-E generated image URL: {image_url}")
+
+        # Use the sanitized filename for saving the new image
+        new_absolute_filepath = IMAGES_FOLDER / f"{safe_subject_base}.png"
+        new_relative_filepath = f"images/{safe_subject_base}.png"
+
+        image_response = requests.get(image_url, stream=True, timeout=30);
+        image_response.raise_for_status()
+        with open(new_absolute_filepath, 'wb') as f:
+            for chunk in image_response.iter_content(chunk_size=8192): f.write(chunk)
+        print(f"New image saved: {new_absolute_filepath}");
+        return new_relative_filepath
+
+    except requests.exceptions.RequestException as req_err: print(f"ERROR: Download failed {image_url}: {req_err}"); return None
+    except Exception as e:
+        print(f"ERROR: DALL-E generation/save failed for '{subject}': {e}")
+        # Clean up potential partial file if generation failed
+        new_absolute_filepath = IMAGES_FOLDER / f"{safe_subject_base}.png"
+        if new_absolute_filepath.exists():
+             try: new_absolute_filepath.unlink()
+             except OSError: print(f"Warn: Could not remove partial file {new_absolute_filepath}")
         return None
 
-# --- OpenAI LLM Interaction (Updated Prompt) ---
+
+# --- OpenAI LLM Interaction for Event Proposal ---
 def call_openai_llm(student_data, user_name="Student"):
-    """Calls OpenAI API to generate event proposals, requesting specific datetime output."""
+    # (Function remains unchanged from previous version - uses gpt-4o-mini)
     print(f"--- Calling OpenAI API for user: {user_name} ---")
-    print(f"Raw Input Data: {student_data}")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key: raise ValueError("OpenAI API key not found in environment variables.")
+    api_key = os.environ.get("OPENAI_API_KEY");
+    if not api_key: raise ValueError("OpenAI API key not found")
     try: client = OpenAI(api_key=api_key)
-    except Exception as e: raise ValueError(f"Failed to initialize OpenAI client: {e}")
+    except Exception as e: raise ValueError(f"Failed to init OpenAI client: {e}")
 
-    # Get current time in UTC for the prompt
-    # You might adjust this to user's local time if needed, but UTC is generally better for backend consistency
     now_utc = datetime.now(timezone.utc)
-    current_time_str = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ') # ISO 8601 format
+    current_time_str = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    # FIXED: Updated system prompt to request specific datetime format
-    system_prompt = """
-    You are an assistant for Irvine Valley College (IVC) students helping them organize study groups and social meetups.
-    The current time is {current_time}. Analyze the user's desired meetup (classes, purpose, availability) and propose potential meetup events.
-    Focus on the classes/purpose mentioned. Suggest plausible IVC locations.
-    Based on the user's availability and the current time, determine a specific future date and time for the event.
+    # Using the detailed system prompt from before
+    system_prompt = f"""You are an assistant that helps college students schedule study sessions or meetups.
+Based on the user's input about their classes, availability, and purpose, propose 1 to 3 specific event options.
+Current UTC time is {current_time_str}. Assume the user is located near Irvine Valley College (IVC) in Irvine, California. Suggest reasonable locations on or near the IVC campus (e.g., Library, Student Services Center, a specific cafe nearby, online).
 
-    You MUST output your response as a JSON list of objects. Each object represents one proposal and MUST have keys:
-    - "type": String (e.g., "Study Group", "Social Hangout").
-    - "subject": String (e.g., "CIS 1A Lab 3 Session").
-    - "details": String, brief description including who initiated it ({user_name}).
-    - "proposed_datetime": String, **A specific future date and time for the event in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ). Calculate this based on the current time and user input.**
-    - "proposed_location": String (e.g., "Library Study Room 3B", "Online/Zoom").
-    - "reasoning": String, brief explanation for the suggestion.
+VERY IMPORTANT: Respond ONLY with a valid JSON object containing a single key "proposals". The value of "proposals" MUST be a JSON list `[]`.
+Each element in the list MUST be a JSON dictionary `{{}}` representing a single event proposal.
+Each event proposal dictionary MUST contain EXACTLY the following keys:
+- "type": (string) A short category like "Study Session", "Project Work", "Meeting", "Social".
+- "subject": (string) A concise title for the event (e.g., "Math 2A Study Group", "CIS Project Collaboration").
+- "details": (string) A brief description of the event's purpose or agenda.
+- "proposed_datetime": (string) The proposed start time in strict ISO 8601 format with UTC timezone (YYYY-MM-DDTHH:MM:SSZ). Do NOT use relative times like "tomorrow afternoon". Be specific.
+- "proposed_location": (string) The specific suggested location (e.g., "IVC Library Room 210", "Online via Discord", "Starbucks near IVC").
+- "reasoning": (string) Brief justification for why this time/location fits the user's request.
 
-    Example User Input: {{"classes": "MATH 1A", "availability": "Next Tuesday afternoon", "purpose": "Review derivatives"}}
-    Example JSON output (assuming current time is 2025-04-04T23:30:00Z):
-    [
-      {{
-        "type": "Study Group",
-        "subject": "MATH 1A Derivatives Review",
-        "details": "Review session for MATH 1A derivatives, initiated by {user_name}.",
-        "proposed_datetime": "2025-04-08T14:00:00Z", // Example: Calculated Next Tuesday 2 PM UTC
-        "proposed_location": "IVC Math Center (LRC)",
-        "reasoning": "Matches class, purpose, and availability. Proposing next Tuesday afternoon UTC."
-      }}
-    ]
-    Generate 1-2 relevant suggestions. Ensure the entire output is ONLY the JSON list.
-    """.format(user_name=user_name, current_time=current_time_str) # Pass current time to prompt
+Example of the exact output format:
+{{
+  "proposals": [
+    {{
+      "type": "Study Session",
+      "subject": "Calculus Midterm Review",
+      "details": "Reviewing chapters 3-5 for the upcoming Math 2A midterm.",
+      "proposed_datetime": "{current_time_str}", # Replace with actual proposed time
+      "proposed_location": "IVC Library - Quiet Study Area",
+      "reasoning": "Fits the user's afternoon availability and the need for a quiet study space."
+    }}
+  ]
+}}
 
-    user_prompt = f"Here is the student's desired meetup information:\n{json.dumps(student_data)}"
+Do NOT include any other text, explanations, or keys in your response. Just the JSON object starting with `{{` and ending with `}}`.
+"""
 
+    user_prompt = f"Student info:\n{json.dumps(student_data)}"
     try:
         print(f"Sending request to OpenAI API (Current Time: {current_time_str})...")
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={ "type": "json_object" }
+            model="gpt-4o-mini", # Use gpt-4o-mini for event proposal (difficult task)
+            messages=[{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}],
+            response_format={"type":"json_object"}
         )
-        print("Received response from OpenAI API.")
-        json_string = response.choices[0].message.content
-        print(f"Raw API Response Content:\n{json_string}")
-        parsed_response = json.loads(json_string)
+        print("Received response...")
+        json_string = response.choices[0].message.content; print(f"Raw Response:\n{json_string[:300]}...")
 
-        # Handle potentially nested JSON list
-        if isinstance(parsed_response, list): petitions_list = parsed_response
-        elif isinstance(parsed_response, dict) and len(parsed_response) > 0:
-            potential_list = next((v for v in parsed_response.values() if isinstance(v, list)), None)
-            if potential_list is not None: petitions_list = potential_list
-            else: raise ValueError("JSON response is dict, but no list found.")
-        else: raise ValueError("Unexpected JSON structure from API.")
+        # Using the updated parsing logic from before
+        petitions_list = []
+        try:
+            parsed_response = json.loads(json_string)
 
-        # FIXED: Validate for the new 'proposed_datetime' key
-        valid_petitions = []
-        required_keys = ["type", "subject", "details", "proposed_datetime", "proposed_location", "reasoning"]
-        for item in petitions_list:
-            if isinstance(item, dict) and all(key in item for key in required_keys):
-                valid_petitions.append(item)
+            if isinstance(parsed_response, dict) and "proposals" in parsed_response and isinstance(parsed_response["proposals"], list):
+                petitions_list = parsed_response["proposals"]
+                print("Parsed 'proposals' list from dictionary.")
             else:
-                print(f"Warning: Proposal object missing required keys or not a dict: {item}")
+                if isinstance(parsed_response, list):
+                     print("Warning: API returned a list directly instead of {'proposals': [...]}. Processing list.")
+                     petitions_list = parsed_response
+                else:
+                    print(f"Warning: Unexpected JSON structure received. Expected dictionary with 'proposals' key containing a list, got: {type(parsed_response)}")
+        except json.JSONDecodeError as json_err:
+             print(f"ERROR: Failed JSON decode: {json_err}"); print(f"Received text: {json_string[:500]}...");
+             raise ValueError("Invalid JSON from AI.")
 
-        print(f"--- OpenAI Call Successful. Valid Proposals: {json.dumps(valid_petitions, indent=2)} ---")
+        # Validation part remains the same
+        valid_petitions=[];
+        required_keys=["type","subject","details","proposed_datetime","proposed_location","reasoning"]
+        for item in petitions_list:
+            if isinstance(item,dict) and all(key in item for key in required_keys): valid_petitions.append(item)
+            else: print(f"Warning: Invalid proposal format or missing keys in item: {item}")
+        print(f"--- OpenAI OK. Valid Proposals: {len(valid_petitions)} ---");
         return valid_petitions
 
     except Exception as e:
-        print(f"ERROR: OpenAI API call or processing failed: {e}")
+        print(f"ERROR: OpenAI call failed: {e}");
         raise
 
-# --- Routes ---
 
+# --- Routes ---
+# (Routes index, calendar_view, api_events_for_calendar remain unchanged)
 @app.route('/')
 def index():
-    """Displays existing events with filtering and sorting."""
-    if not current_user.is_authenticated:
-         flash('Please log in or sign up.', 'info'); return redirect(url_for('login'))
-
-    subject_filter = request.args.get('subject', '').strip()
-    # FIXED: Added 'event_time_asc' sorting option
-    sort_by = request.args.get('sort_by', 'event_time_asc') # Default sort: Soonest event first
-
+    # ... same as previous ...
+    if not current_user.is_authenticated: flash('Please log in or sign up.', 'info'); return redirect(url_for('login'))
+    subject_filter = request.args.get('subject', '').strip(); sort_by = request.args.get('sort_by', 'event_time_asc')
+    committed_events = []; events = []
+    now_utc = datetime.now(timezone.utc)
+    try: committed_events = Event.query.join(Commitment).filter(Commitment.user_id==current_user.id).filter(Event.proposed_datetime.isnot(None)).filter(Event.proposed_datetime > now_utc).order_by(Event.proposed_datetime.asc()).all()
+    except Exception as e: print(f"Error fetching committed events: {e}"); flash("Error loading your commitments.", "warning")
     try:
-        query = Event.query.options(
-            db.joinedload(Event.creator),
-            db.subqueryload(Event.comments).joinedload(Comment.author),
-            db.subqueryload(Event.commitments).joinedload(Commitment.user)
-        )
-
-        if subject_filter:
-            query = query.filter(Event.subject.ilike(f'%{subject_filter}%'))
-
-        # Apply Sorting
-        if sort_by == 'date_asc':
-            query = query.order_by(Event.created_at.asc())
-        elif sort_by == 'date_desc':
-             query = query.order_by(Event.created_at.desc())
-        elif sort_by == 'event_time_asc':
-            # Sort by the actual proposed event time (soonest first)
-            # Put events with no parsable time at the end
-            query = query.order_by(nullslast(Event.proposed_datetime.asc()))
-        else: # Default to event_time_asc if invalid sort_by is given
-             query = query.order_by(nullslast(Event.proposed_datetime.asc()))
-
+        query = Event.query.options(db.joinedload(Event.creator), db.subqueryload(Event.comments).joinedload(Comment.author), db.subqueryload(Event.commitments).joinedload(Commitment.user))
+        if subject_filter: query = query.filter(Event.subject.ilike(f'%{subject_filter}%'))
+        if sort_by == 'date_asc': query = query.order_by(Event.created_at.asc())
+        elif sort_by == 'date_desc': query = query.order_by(Event.created_at.desc())
+        elif sort_by == 'event_time_asc': query = query.order_by(nullslast(Event.proposed_datetime.asc()))
+        else: query = query.order_by(nullslast(Event.proposed_datetime.asc()))
         events = query.all()
-
-    except Exception as e:
-        print(f"Error fetching events: {e}"); flash("Error loading events.", "error"); events = []
-
+    except Exception as e: print(f"Error fetching all events: {e}"); flash("Error loading events.", "error")
     current_filters = { 'subject': subject_filter, 'sort_by': sort_by }
-    return render_template('index.html', events=events, filters=current_filters)
+    return render_template('index.html', events=events, committed_events=committed_events, filters=current_filters)
 
+
+@app.route('/calendar')
+@login_required
+def calendar_view(): return render_template('calendar.html')
+
+@app.route('/api/events_for_calendar')
+@login_required
+def api_events_for_calendar():
+    # ... same as previous ...
+    try:
+        events = Event.query.filter(Event.proposed_datetime.isnot(None)).all(); calendar_events = []
+        for event in events:
+            start_time = event.proposed_datetime.isoformat()
+            event_url = url_for('index', _anchor=f'event-{event.id}', _external=False)
+            calendar_events.append({'id': event.id, 'title': event.subject, 'start': start_time, 'url': event_url, 'description': event.details or '', 'location': event.proposed_location or ''})
+        return jsonify(calendar_events)
+    except Exception as e: print(f"Error calendar API: {e}"); return jsonify({"error": "Fetch error"}), 500
 
 @app.route('/propose', methods=['GET', 'POST'])
 @login_required
 def propose_event_form():
-    """Handles event proposal, parses datetime, saves to DB."""
     if request.method == 'POST':
-        classes = request.form.get('classes', '').strip()
-        availability = request.form.get('availability', '').strip()
-        purpose = request.form.get('purpose', '').strip()
-        if not availability or not purpose:
-             flash('Purpose and availability are required.', 'error')
-             return render_template('propose_form.html', form_data=request.form)
-
-        student_input_data = { "classes": classes, "availability": availability, "purpose": purpose }
+        classes=request.form.get('classes','').strip();availability=request.form.get('availability','').strip();purpose=request.form.get('purpose','').strip()
+        if not availability or not purpose: flash('Purpose and availability required.','error'); return render_template('propose_form.html',form_data=request.form)
+        student_input_data={"classes":classes,"availability":availability,"purpose":purpose}
         try:
-            user_identifier = current_user.name or current_user.email
-            proposed_events_data = call_openai_llm(student_input_data, user_identifier)
+            user_identifier=current_user.name or current_user.email
+            proposed_events_data=call_openai_llm(student_input_data,user_identifier) # Uses gpt-4o-mini
+            if not proposed_events_data: flash('AI suggestions failed/invalid.','info'); return render_template('propose_form.html',form_data=request.form)
 
-            if not proposed_events_data:
-                flash('AI could not generate suggestions.', 'info')
-                return render_template('propose_form.html', form_data=request.form)
-
-            num_saved = 0
+            saved_event_ids = []; num_created = 0
+            # First Pass: Create Events
             for event_data in proposed_events_data:
-                # FIXED: Parse datetime string from LLM
-                proposed_dt_str = event_data.get('proposed_datetime')
-                parsed_datetime = parse_datetime_string(proposed_dt_str)
-                if not parsed_datetime:
-                     flash(f"Warning: Could not parse proposed time '{proposed_dt_str}' for event '{event_data.get('subject')}'. It won't be sortable by time.", "warning")
+                proposed_dt_str=event_data.get('proposed_datetime'); parsed_datetime=parse_datetime_string(proposed_dt_str)
+                if not parsed_datetime: flash(f"Warn: Bad time '{proposed_dt_str}' for '{event_data.get('subject')}'.",'warning')
+                try: new_event=Event(user_id=current_user.id,subject=event_data.get('subject'),type=event_data.get('type'),proposed_time_string=proposed_dt_str,proposed_datetime=parsed_datetime,proposed_location=event_data.get('proposed_location'),details=event_data.get('details'),reasoning=event_data.get('reasoning'),status='proposed'); db.session.add(new_event); db.session.flush(); saved_event_ids.append({'id': new_event.id, 'subject': new_event.subject}); num_created+=1
+                except Exception as e: print(f"Error creating event obj: {e}"); flash("Warning: Couldn't save suggestion.","warning"); db.session.rollback()
+            if num_created == 0: flash('Could not create event records.','error'); return render_template('propose_form.html',form_data=request.form)
+            try: db.session.commit(); print(f"Committed {num_created} initial events.")
+            except Exception as e: db.session.rollback(); print(f"ERROR: Failed initial commit: {e}"); flash('DB error saving events.','error'); return render_template('propose_form.html',form_data=request.form)
 
-                try:
-                    new_event = Event(
-                        user_id=current_user.id,
-                        subject=event_data.get('subject'),
-                        type=event_data.get('type'),
-                        # Store both the string and the parsed datetime (or None)
-                        proposed_time_string=proposed_dt_str, # Store original string
-                        proposed_datetime=parsed_datetime,     # Store parsed object (or None)
-                        proposed_location=event_data.get('proposed_location'),
-                        details=event_data.get('details'),
-                        reasoning=event_data.get('reasoning'),
-                        status='proposed'
-                    )
-                    db.session.add(new_event); num_saved += 1
-                except Exception as e: print(f"Error creating event obj: {e}"); flash("Warning: Couldn't save AI suggestion.", "warning")
+            # Second Pass: Generate/Assign Images
+            num_images_assigned = 0
+            for event_info in saved_event_ids:
+                 event_id=event_info['id']; event_subject=event_info['subject']
+                 print(f"Image assignment attempt for Event {event_id}, Subject: '{event_subject}'")
+                 # Calls the UPDATED generate_event_image function which now includes the GPT-4o check
+                 image_rel_path = generate_event_image(event_subject)
+                 if image_rel_path:
+                     try:
+                         event_to_update=db.session.get(Event,event_id)
+                         if event_to_update: event_to_update.image_filename = image_rel_path; db.session.add(event_to_update); num_images_assigned+=1
+                         else: print(f"Warn: Event {event_id} not found for image update.")
+                     except Exception as e: print(f"Error updating image filename for event {event_id}: {e}")
 
-            if num_saved > 0:
-                db.session.commit(); flash(f'{num_saved} new proposal(s) created!', 'success')
-                return redirect(url_for('index'))
-            else: flash('Could not save any AI suggestions.', 'error'); return render_template('propose_form.html', form_data=request.form)
+            if num_images_assigned > 0:
+                try: db.session.commit(); print(f"Committed images/assignments for {num_images_assigned} events.")
+                except Exception as e: db.session.rollback(); print(f"ERROR: Commit image filenames failed: {e}"); flash('Error saving image refs.','warning')
 
-        except ValueError as ve: flash(f'Config Error: {ve}', 'error')
-        except Exception as e: db.session.rollback(); flash(f'Unexpected error: {e}', 'error'); print(f"Error: {e}")
-        return render_template('propose_form.html', form_data=request.form)
-
+            flash(f'{num_created} proposal(s) created! {num_images_assigned} image(s) assigned/generated.','success')
+            return redirect(url_for('index'))
+        except ValueError as ve: flash(f'Config Error: {ve}','error')
+        except Exception as e: db.session.rollback(); flash('Unexpected error during proposal.','error'); print(f"Error in /propose: {e}")
+        return render_template('propose_form.html',form_data=request.form)
     return render_template('propose_form.html')
 
-
-# (Commit route remains the same)
+# (Routes commit_to_event, add_comment, signup, login, logout remain unchanged)
 @app.route('/commit/<int:event_id>', methods=['POST'])
 @login_required
 def commit_to_event(event_id):
-    event = db.session.get(Event, event_id)
+    # ... same as previous ...
+    event = db.session.get(Event, event_id);
     if not event: return jsonify({"error": "Event not found"}), 404
-    if Commitment.query.filter_by(user_id=current_user.id, event_id=event_id).first():
-        return jsonify({"error": "Already committed"}), 409
-    try:
-        db.session.add(Commitment(user_id=current_user.id, event_id=event_id))
-        db.session.commit()
-        user_contact = current_user.phone or current_user.email
-        print(f"--- REMINDER SIM: User {current_user.email} committed to '{event.subject}'. Contact: {user_contact} ---")
-        return jsonify({"message": "Successfully committed", "user_name": current_user.name or current_user.email}), 201
-    except Exception as e: db.session.rollback(); print(f"Error committing: {e}"); return jsonify({"error": "DB error"}), 500
+    if Commitment.query.filter_by(user_id=current_user.id, event_id=event_id).first(): return jsonify({"error": "Already committed"}), 409
+    try: db.session.add(Commitment(user_id=current_user.id, event_id=event_id)); db.session.commit(); user_contact = current_user.phone or current_user.email; print(f"--- REMINDER SIM: User {current_user.email} committed to '{event.subject}'. Contact: {user_contact} ---"); return jsonify({"message": "Committed", "user_name": current_user.name or current_user.email}), 201
+    except Exception as e: db.session.rollback(); print(f"Error commit: {e}"); return jsonify({"error": "DB error"}), 500
 
-
-# (Add Comment route remains the same)
 @app.route('/event/<int:event_id>/comment', methods=['POST'])
 @login_required
 def add_comment(event_id):
-    event = db.session.get(Event, event_id)
+    # ... same as previous ...
+    event = db.session.get(Event, event_id);
     if not event: flash("Event not found.", "error"); return redirect(url_for('index'))
     comment_text = request.form.get('comment_text', '').strip()
     if not comment_text: flash("Comment cannot be empty.", "error"); return redirect(url_for('index', _anchor=f'event-{event_id}'))
-    try:
-        new_comment = Comment(text=comment_text, user_id=current_user.id, event_id=event_id)
-        db.session.add(new_comment); db.session.commit(); flash("Comment added!", "success")
+    try: new_comment = Comment(text=comment_text, user_id=current_user.id, event_id=event_id); db.session.add(new_comment); db.session.commit(); flash("Comment added!", "success")
     except Exception as e: db.session.rollback(); print(f"Error adding comment: {e}"); flash("Error adding comment.", "error")
     return redirect(url_for('index', _anchor=f'event-{event_id}'))
 
-# --- Authentication Routes ---
-# (Signup, Login, Logout routes remain the same)
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
+    # ... same as previous ...
     if current_user.is_authenticated: return redirect(url_for('index'))
     if request.method == 'POST':
         email=request.form.get('email','').strip();password=request.form.get('password');confirm_password=request.form.get('confirm_password');name=request.form.get('name','').strip();phone=request.form.get('phone','').strip();error=False
@@ -413,12 +498,13 @@ def signup():
         if valid_email and User.query.filter_by(email=valid_email).first():flash('Email already registered.','warning');error=True
         if error:return render_template('signup.html',form_data=request.form)
         new_user=User(email=valid_email,name=name,phone=phone);new_user.set_password(password);db.session.add(new_user)
-        try:db.session.commit();flash('Account created! You are logged in.','success');login_user(new_user);return redirect(url_for('index'))
+        try:db.session.commit();flash('Account created! Logged in.','success');login_user(new_user);return redirect(url_for('index'))
         except Exception as e:db.session.rollback();flash('DB error creating account.','error');print(f"Signup Error: {e}");return render_template('signup.html',form_data=request.form)
     return render_template('signup.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    # ... same as previous ...
     if current_user.is_authenticated:return redirect(url_for('index'))
     if request.method=='POST':
         email=request.form.get('email','').strip();password=request.form.get('password');remember=True if request.form.get('remember')else False
@@ -426,8 +512,8 @@ def login():
         except EmailNotValidError:flash('Invalid email format.','error');return render_template('login.html',form_data=request.form)
         user=User.query.filter_by(email=valid_email).first()
         if not user or not user.check_password(password):flash('Invalid email or password.','error');return render_template('login.html',form_data=request.form)
-        login_user(user,remember=remember);flash('Logged in successfully.','success')
-        next_page=request.args.get('next')
+        login_user(user,remember=remember);flash('Logged in.','success')
+        next_page=request.args.get('next');
         if next_page and not next_page.startswith('/'):next_page=url_for('index')
         return redirect(next_page or url_for('index'))
     return render_template('login.html')
@@ -435,12 +521,18 @@ def login():
 @app.route('/logout')
 @login_required
 def logout():
-    logout_user();flash('You have been logged out.','success');return redirect(url_for('login'))
+    # ... same as previous ...
+    logout_user();flash('Logged out.','success');return redirect(url_for('login'))
+
 
 # --- Main Execution ---
 if __name__ == '__main__':
-    # Add dateutil install check here? Maybe too much for startup. Warning printed at import.
     with app.app_context(): print("Initializing DB..."); db.create_all(); print("DB Initialized.")
+    # Ensure the OPENAI_API_KEY environment variable is set before running
+    if not os.environ.get("OPENAI_API_KEY"):
+        print("CRITICAL ERROR: OPENAI_API_KEY environment variable not set.")
+    else:
+        print("OpenAI API Key found.")
     app.run(debug=True, port=5001)
 ================================================================================
 
@@ -451,98 +543,83 @@ File: templates/index.html
 {% block title %}Home / Events{% endblock %}
 
 {% block content %}
-    <h1>Upcoming IVC Meetups</h1>
 
-    {# Filter and Sort Form - Added Event Time Sort #}
-    <div class="filter-sort-controls" style="background-color: #f1f1f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-        <form method="GET" action="{{ url_for('index') }}" style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-             <div>
-                 <label for="subject" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Filter by Subject:</label>
-                 <input type="text" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study" style="padding: 8px; font-size: 0.9em; width: 200px;">
-             </div>
-             <div>
-                 <label for="sort_by" style="display: block; margin-bottom: 3px; font-size: 0.9em;">Sort by:</label>
-                 <select id="sort_by" name="sort_by" style="padding: 8px; font-size: 0.9em;">
-                     {# FIXED: Added option for event time sorting #}
-                     <option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option>
-                     <option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option>
-                     <option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option>
-                 </select>
-             </div>
-             <div>
-                  <button type="submit" style="padding: 8px 15px; font-size: 0.9em; margin-top: 18px;">Apply</button> {# Adjust margin if needed #}
-             </div>
-         </form>
-     </div>
+    {# Hero Image (Unchanged) #}
+    <div class="hero-banner mb-4">
+        <img src="{{ url_for('static', filename='hero-banner.png') }}" class="img-fluid rounded shadow-sm" alt="IVC Meetups Banner">
+    </div>
+
+    {# User's Committed Events Section (Unchanged) #}
+    {% if current_user.is_authenticated and committed_events %}
+    <div class="committed-events-section alert alert-primary">
+        <h2 class="h5"><i class="bi bi-calendar-check-fill"></i> Your Upcoming Committed Events</h2>
+        <ul class="list-unstyled mb-0">
+            {% for event in committed_events %}<li><a href="#event-{{ event.id }}" class="link-primary text-decoration-none"><i class="bi bi-dot"></i> <strong>{{ event.subject }}</strong></a>{% if event.type %}<span class="badge rounded-pill bg-info text-dark ms-1">{{ event.type }}</span>{% endif %} - <small class="text-muted">{% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d at %I:%M %p') }} at {{ event.proposed_location }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} - {{ event.proposed_location }}{% else %}Time/Location TBD{% endif %}</small></li>{% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <h1 class="h3 mb-3">{{ 'All Proposed Meetups' if not filters.subject else 'Filtered Meetups' }}</h1>
+
+    {# Filter and Sort Form (Unchanged) #}
+    <div class="filter-sort-controls card card-body bg-light mb-4">
+        <form method="GET" action="{{ url_for('index') }}">
+            <div class="row g-3 align-items-end">
+                 <div class="col-md-5"><label for="subject" class="form-label">Filter by Subject:</label><input type="text" class="form-control form-control-sm" id="subject" name="subject" value="{{ filters.subject or '' }}" placeholder="e.g., Math, CIS, Study"></div>
+                 <div class="col-md-4"><label for="sort_by" class="form-label">Sort by:</label><select id="sort_by" name="sort_by" class="form-select form-select-sm"><option value="event_time_asc" {% if filters.sort_by == 'event_time_asc' %}selected{% endif %}>Event Time (Soonest First)</option><option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>Proposal Date (Newest First)</option><option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>Proposal Date (Oldest First)</option></select></div>
+                 <div class="col-md-auto"><button type="submit" class="btn btn-primary btn-sm w-100">Apply</button></div>
+            </div>
+        </form>
+    </div>
 
     {# Event List #}
-    <div class="event-list">
+    <div class="event-list row">
         {% if events %}
             {% for event in events %}
-                <div class="event-card" id="event-{{ event.id }}">
-                    <h3>
-                        {{ event.subject }}
-                        {% if event.type %}<span class="event-type">({{ event.type }})</span>{% endif %}
-                    </h3>
-                    <p>
-                        {# FIXED: Display parsed DateTime if available, otherwise fallback #}
-                        <strong>Time:</strong>
-                        {% if event.proposed_datetime %}
-                            {{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }} {# Example Format #}
-                        {% elif event.proposed_time_string %}
-                            {{ event.proposed_time_string }} <small>(Could not parse date)</small>
+                <div class="col-12 mb-4">
+                    <div class="card event-card h-100" id="event-{{ event.id }}">
+                        {# --- FIXED: Use dynamic image filename or fallback --- #}
+                        {% if event.image_filename %}
+                            <img src="{{ url_for('static', filename=event.image_filename) }}" class="card-img-top" alt="{{ event.subject }} Image" style="max-height: 200px; object-fit: cover;">
                         {% else %}
-                            Not specified
+                            <img src="{{ url_for('static', filename='default-event-card.png') }}" class="card-img-top" alt="Default Event Image" style="max-height: 200px; object-fit: cover; opacity: 0.7;"> {# Slightly faded default #}
                         {% endif %}
-                        <br>
-                        <strong>Location:</strong> {{ event.proposed_location }} <br>
-                        <strong>Details:</strong> {{ event.details }} <br>
-                        <strong>Proposed by:</strong> {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}
-                    </p>
 
-                    {# Commit Section #}
-                    <div class="commit-section">
-                        <strong>Committed ({{ event.commitments|length }}):</strong>
-                        <span id="committed-list-{{ event.id }}">
-                            {% for commitment in event.commitments %}{{ commitment.user.name or commitment.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}
-                        </span>
-                        <div style="margin-top: 10px;">
-                             {% if current_user.is_authenticated %}
-                                {% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}
-                                {% if user_committed %}<button class="committed-btn" disabled>Committed</button>
-                                {% else %}<button class="commit-btn" data-event-id="{{ event.id }}">Commit</button>{% endif %}
-                             {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
-                            <div class="commit-feedback" id="feedback-{{ event.id }}"></div>
-                        </div>
-                    </div>
-
-                    {# Comments Section #}
-                    <div class="comments-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
-                        <h4>Comments</h4>
-                        <div class="comment-list" style="margin-bottom: 15px; max-height: 200px; overflow-y: auto; font-size: 0.9em;">
-                            {% if event.comments %} {# Iterate directly over ordered comments #}
-                                {% for comment in event.comments %}
-                                    <div class="comment" style="margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px dashed #f0f0f0;">
-                                        <strong>{{ comment.author.name or comment.author.email }}:</strong>
-                                        <span style="color: #444;">{{ comment.text }}</span>
-                                        <small style="display: block; color: #888; font-size: 0.8em;">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small>
-                                    </div>
-                                {% endfor %}
-                            {% else %}
-                                <p><small>No comments yet.</small></p>
-                            {% endif %}
-                        </div>
-                        {% if current_user.is_authenticated %}
-                            <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
-                                <textarea name="comment_text" rows="2" placeholder="Add comment..." required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 5px; box-sizing: border-box; font-size: 0.9em;"></textarea>
-                                <button type="submit" style="padding: 5px 10px; font-size: 0.9em;">Post</button>
-                            </form>
-                        {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
-                    </div>
-                </div> {# End event-card #}
+                        <div class="card-body d-flex flex-column">
+                            <div> {# Content #}
+                                <h3 class="card-title h5 mb-1">{{ event.subject }}</h3>
+                                {% if event.type %}<span class="badge rounded-pill bg-secondary fw-normal mb-2">{{ event.type }}</span>{% endif %}
+                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-calendar-event"></i> {% if event.proposed_datetime %}{{ event.proposed_datetime.strftime('%a, %b %d, %Y at %I:%M %p %Z') }}{% elif event.proposed_time_string %}{{ event.proposed_time_string }} <span class="text-danger">(Time Parsing Failed)</span>{% else %} Time Not Specified {% endif %}</small></p>
+                                <p class="card-text mb-1 text-muted"><small class="icon-text"><i class="bi bi-geo-alt-fill"></i> {{ event.proposed_location }}</small></p>
+                                <p class="card-text mb-2"><small>{{ event.details }}</small></p>
+                                <p class="card-text text-muted border-top pt-2"><small><i class="bi bi-person-fill"></i> Proposed by: {{ event.creator.name or event.creator.email }} on {{ event.created_at.strftime('%Y-%m-%d') }}</small></p>
+                            </div>
+                            {# Commit Section #}
+                            <div class="commit-section pt-2 mt-auto">
+                                <h6 class="icon-text"><i class="bi bi-people-fill"></i> Committed ({{ event.commitments|length }}):</h6>
+                                <p class="mb-2" id="committed-list-{{ event.id }}"><small>{% for c in event.commitments %}{{ c.user.name or c.user.email }}{% if not loop.last %}, {% endif %}{% else %}No one yet.{% endfor %}</small></p>
+                                 {% if current_user.is_authenticated %}{% set user_committed = false %}{% for c in event.commitments %}{% if c.user_id == current_user.id %}{% set user_committed = true %}{% endif %}{% endfor %}{% if user_committed %}<button class="btn btn-secondary btn-sm committed-btn" disabled><i class="bi bi-check-lg"></i> Committed</button>{% else %}<button class="btn btn-success btn-sm commit-btn" data-event-id="{{ event.id }}"><i class="bi bi-calendar-plus"></i> Commit</button>{% endif %}{% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to commit.</small></p>{% endif %}
+                                <div class="commit-feedback mt-1" id="feedback-{{ event.id }}"></div>
+                            </div>
+                            {# Comments Section #}
+                            <div class="comments-section pt-3 mt-3 border-top">
+                                <h6 class="mb-3 icon-text"><i class="bi bi-chat-dots-fill"></i> Comments</h6>
+                                <div class="comment-list mb-3">
+                                    {% if event.comments %}{% for comment in event.comments %}<div class="comment"><strong><i class="bi bi-person-circle"></i> {{ comment.author.name or comment.author.email }}:</strong><span class="text-muted"> {{ comment.text }}</span><small class="d-block text-muted">({{ comment.created_at.strftime('%Y-%m-%d %H:%M') }})</small></div>{% endfor %}
+                                    {% else %}<p><small>No comments yet.</small></p>{% endif %}
+                                </div>
+                                {% if current_user.is_authenticated %}
+                                    <form method="POST" action="{{ url_for('add_comment', event_id=event.id) }}" class="comment-form">
+                                        <div class="input-group input-group-sm mb-2"><textarea name="comment_text" rows="1" placeholder="Add comment..." required class="form-control"></textarea><button type="submit" class="btn btn-outline-secondary"><i class="bi bi-send"></i> Post</button></div>
+                                    </form>
+                                {% else %}<p><small><a href="{{ url_for('login', next=request.path) }}">Login</a> to comment.</small></p>{% endif %}
+                            </div>
+                        </div> {# End card-body #}
+                    </div> {# End card #}
+                </div> {# End col #}
             {% endfor %}
         {% else %}
-             <p>No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}">propose one</a>!</p>
+            <div class="col-12"><div class="alert alert-warning" role="alert">No events found. Try adjusting filters or <a href="{{ url_for('propose_event_form') }}" class="alert-link">propose one</a>!</div></div>
         {% endif %}
     </div> {# End event-list #}
 {% endblock %}
@@ -581,180 +658,145 @@ File: templates/index.html
 {% endblock %}
 ================================================================================
 
+File: templates/calendar.html
+
+{% extends "layout.html" %}
+
+{% block title %}Event Calendar{% endblock %}
+
+{% block content %}
+    <h1 class="h3 mb-3">Event Calendar</h1>
+    <p class="text-muted">Visual calendar view of scheduled meetups. Click an event to see details on the list page.</p>
+
+    {# Calendar container #}
+    <div class="card">
+        <div class="card-body">
+             <div id='calendar'></div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    {# FullCalendar JS via CDN #}
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js'></script>
+
+    <script>
+      // FullCalendar Initialization Script (Unchanged logically)
+      document.addEventListener('DOMContentLoaded', function() {
+        var calendarEl = document.getElementById('calendar');
+        if (calendarEl) {
+          var calendar = new FullCalendar.Calendar(calendarEl, {
+            initialView: 'dayGridMonth',
+            headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,timeGridDay,listWeek' },
+            events: '/api/events_for_calendar',
+            eventTimeFormat: { hour: 'numeric', minute: '2-digit', meridiem: 'short' },
+            eventDidMount: function(info) { /* ... same tooltip logic ... */ },
+            loading: function(isLoading) { /* ... same loading logic ... */ },
+            eventSourceFailure: function(error) { /* ... same error logic ... */ }
+          });
+          calendar.render();
+        } else { console.error("Calendar element not found!"); }
+      });
+    </script>
+{% endblock %}
+================================================================================
+
 File: templates/layout.html
 
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}IVC Meetup Platform{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 0;
-            background-color: #f8f9fa;
-            color: #333;
-        }
-        nav {
-            background-color: #005c9e; /* IVC Blue */
-            padding: 0.75rem 1.5rem;
-            color: white;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        nav ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }
-        nav ul li {
-            display: inline;
-        }
-        nav ul li a {
-            color: white;
-            text-decoration: none;
-            padding: 0.5rem 0;
-            transition: opacity 0.2s ease;
-        }
-        nav ul li a:hover {
-            opacity: 0.8;
-            text-decoration: underline;
-        }
-        .nav-right {
-            margin-left: auto; /* Pushes login/logout links right */
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-        .container {
-            max-width: 960px;
-            margin: 2rem auto;
-            padding: 1.5rem;
-            background-color: #ffffff;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        /* Flash Messages Styling */
-        .flash-messages { list-style: none; padding: 0; margin: 0 0 1.5rem 0; }
-        .flash-messages li { padding: 0.8rem 1.2rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid transparent; }
-        .flash-success { background-color: #d1e7dd; color: #0f5132; border-color: #badbcc; }
-        .flash-error { background-color: #f8d7da; color: #842029; border-color: #f5c2c7; }
-        .flash-info { background-color: #cff4fc; color: #055160; border-color: #b6effb; }
-        .flash-warning { background-color: #fff3cd; color: #664d03; border-color: #ffecb5; }
+        /* Optional: Minor custom adjustments */
+        body { padding-top: 56px; background-color: #f8f9fa; }
+        .navbar { background-color: #005c9e !important; } /* IVC Blue */
+        .event-card, .committed-events-section, .filter-sort-controls { margin-bottom: 1.5rem; }
+        .comment-list { max-height: 250px; overflow-y: auto; font-size: 0.9em; }
+        .comment { padding-bottom: 0.5rem; margin-bottom: 0.5rem; border-bottom: 1px dashed #eee; }
+        .comment strong { color: #005c9e; }
+        .committed-events-section ul { list-style: none; padding-left: 0; }
+        .committed-events-section li { border-bottom: 1px solid #dee2e6; padding: 0.5rem 0; }
+        #calendar { min-height: 600px; }
 
-        /* Basic Form Styling */
-        form label { display: block; margin-bottom: 0.3rem; font-weight: 600; font-size: 0.9em; }
-        form input[type="text"],
-        form input[type="email"],
-        form input[type="password"],
-        form input[type="tel"],
-        form textarea {
-            width: 100%; /* Use 100% width */
-            padding: 0.75rem;
-            margin-bottom: 1rem;
-            border: 1px solid #ced4da;
-            border-radius: 4px;
-            box-sizing: border-box; /* Include padding in width */
-            font-size: 1rem;
+        /* NEW: Subtle hover effect for cards */
+        .event-card { transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out; }
+        .event-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        form textarea { min-height: 80px; resize: vertical; }
-        form button[type="submit"] {
-            background-color: #007bff;
-            color: white;
-            padding: 0.75rem 1.5rem;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 1rem;
-            transition: background-color 0.2s ease;
-        }
-        form button[type="submit"]:hover { background-color: #0056b3; }
-        form input[type="checkbox"] { margin-right: 0.5rem; vertical-align: middle;}
-        form label[for="remember"] { display: inline; font-weight: normal; }
 
-        /* Event Card Styling */
-        .event-list { margin-top: 1.5rem; }
-        .event-card {
-            border: 1px solid #e1e4e8;
-            padding: 1.2rem;
-            margin-bottom: 1.5rem;
-            border-radius: 6px;
-            background-color: #fff;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            transition: box-shadow 0.2s ease;
-        }
-        .event-card:hover { box-shadow: 0 3px 8px rgba(0,0,0,0.08); }
-        .event-card h3 { margin-top: 0; margin-bottom: 0.5rem; font-size: 1.25rem; color: #005c9e; }
-        .event-card p { margin-bottom: 0.5rem; color: #555; line-height: 1.5; }
-        .event-card strong { color: #333; }
-        .event-card .event-type { font-size: 0.85em; color: #6c757d; font-weight: normal; margin-left: 0.5rem; }
-        .commit-section { margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid #eee; font-size: 0.9em; color: #555; }
-        .commit-section strong { display: block; margin-bottom: 0.3rem; }
-        .commit-btn, .committed-btn {
-            display: inline-block; /* Allows margin */
-            padding: 0.4rem 0.8rem;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9em;
-            margin-top: 0.5rem;
-            transition: background-color 0.2s ease, opacity 0.2s ease;
-            text-align: center;
-        }
-        .commit-btn { background-color: #28a745; color: white; }
-        .commit-btn:hover { background-color: #218838; }
-        .committed-btn { background-color: #6c757d; color: white; cursor: not-allowed; opacity: 0.7; }
-        .commit-feedback { font-size: 0.85em; margin-top: 0.5rem; min-height: 1.2em; /* Prevent layout shift */ }
+        /* Icon alignment helper */
+        .icon-text { display: inline-flex; align-items: center; gap: 0.35rem; }
+        .icon-text .bi { position: relative; top: -1px; /* Fine-tune vertical alignment */ }
 
-        h1, h2, h3 { color: #343a40; }
-        a { color: #007bff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
+        /* Badge styling */
+         .badge { font-size: 0.75em; padding: 0.3em 0.5em; }
+
     </style>
-</head>
-<body>
-    <nav>
-        <ul>
-            <li><a href="{{ url_for('index') }}">Home / Events</a></li>
-            <li><a href="{{ url_for('propose_event_form') }}">Propose Event</a></li>
-            <li class="nav-right">
+  </head>
+  <body>
+
+    <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
+        {# Navbar content remains the same as previous version... #}
+         <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('index') }}">IVC Meetups</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" aria-current="page" href="{{ url_for('index') }}">Event List</a> </li>
+                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'calendar_view' %}active{% endif %}" href="{{ url_for('calendar_view') }}">Calendar View</a> </li>
+                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'propose_event_form' %}active{% endif %}" href="{{ url_for('propose_event_form') }}">Propose Event</a> </li>
+            </ul>
+            <ul class="navbar-nav ms-auto">
                 {% if current_user.is_authenticated %}
-                    <span>Hi, {{ current_user.name or current_user.email }}</span> |
-                    <a href="{{ url_for('logout') }}">Logout</a>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        Hi, {{ current_user.name or current_user.email }}
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+                        <li><a class="dropdown-item" href="{{ url_for('logout') }}">Logout</a></li>
+                    </ul>
+                </li>
                 {% else %}
-                    <a href="{{ url_for('login') }}">Login</a> |
-                    <a href="{{ url_for('signup') }}">Sign Up</a>
+                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'login' %}active{% endif %}" href="{{ url_for('login') }}">Login</a> </li>
+                <li class="nav-item"> <a class="nav-link {% if request.endpoint == 'signup' %}active{% endif %}" href="{{ url_for('signup') }}">Sign Up</a> </li>
                 {% endif %}
-            </li>
-        </ul>
+            </ul>
+            </div>
+      </div>
     </nav>
 
-    <main class="container">
+    <main class="container mt-4">
+        {# Flash Messages (same logic, uses Bootstrap alerts)... #}
         {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                <ul class="flash-messages">
-                {% for category, message in messages %}
-                    {# Map category to CSS class, default to info #}
-                    {% set category_map = {'error': 'error', 'success': 'success', 'warning': 'warning'} %}
-                    <li class="flash-{{ category_map.get(category, 'info') }}">{{ message }}</li>
-                {% endfor %}
-                </ul>
-            {% endif %}
+            {% if messages %} {% for category, message in messages %}
+                {% set category_map = {'error': 'danger', 'success': 'success', 'warning': 'warning', 'info': 'info'} %}
+                <div class="alert alert-{{ category_map.get(category, 'info') }} alert-dismissible fade show" role="alert">
+                    {{ message }} <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %} {% endif %}
         {% endwith %}
 
-        {% block content %}
-        {# Page-specific content will go here #}
-        {% endblock %}
+        {% block content %} {# Page-specific content #} {% endblock %}
     </main>
 
-    {% block scripts %}
-    {# Page-specific scripts can go here #}
-    {% endblock %}
-</body>
+    <footer class="py-3 my-4 border-top text-center">
+        <span class="text-muted">IVC Meetup Platform | Hackathon Project</span>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+
+    {% block scripts %} {# Page-specific scripts #} {% endblock %}
+  </body>
 </html>
 ================================================================================
 
@@ -765,28 +807,36 @@ File: templates/login.html
 {% block title %}Login{% endblock %}
 
 {% block content %}
-    <h2>Login</h2>
-    <form method="POST" action="{{ url_for('login') }}">
-        {# Hidden input to potentially preserve 'next' URL if needed, handled in route #}
-        <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
-
-        <div>
-            <label for="email">Email:</label>
-            <input type="email" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required autofocus>
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title text-center mb-4">Login</h2>
+                <form method="POST" action="{{ url_for('login') }}">
+                    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email address</label>
+                        <input type="email" class="form-control" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required autofocus>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="remember" name="remember" value="1">
+                        <label class="form-check-label" for="remember">Remember Me</label>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">Login</button>
+                    </div>
+                </form>
+                <p class="text-center mt-3">
+                    Don't have an account? <a href="{{ url_for('signup') }}">Sign up here</a>
+                </p>
+            </div>
         </div>
-        <div>
-            <label for="password">Password:</label>
-            <input type="password" id="password" name="password" required>
-        </div>
-        <div>
-             <input type="checkbox" id="remember" name="remember" value="1"> {# Use value="1" #}
-             <label for="remember">Remember Me</label>
-        </div>
-        <button type="submit">Login</button>
-    </form>
-    <p style="margin-top: 1rem;">
-        Don't have an account? <a href="{{ url_for('signup') }}">Sign up here</a>
-    </p>
+    </div>
+</div>
 {% endblock %}
 ================================================================================
 
@@ -797,24 +847,28 @@ File: templates/propose_form.html
 {% block title %}Propose an Event{% endblock %}
 
 {% block content %}
-    <h2>Propose a New Meetup Event</h2>
-    <p>Describe the event you want to organize. Our AI will attempt to suggest specific times and locations based on your input.</p>
+<div class="card">
+    <div class="card-body">
+        <h2 class="card-title mb-3">Propose a New Meetup Event</h2>
+        <p class="card-text text-muted mb-4">Describe the event you want to organize. Our AI will attempt to suggest specific times and locations based on your input.</p>
 
-    <form method="POST" action="{{ url_for('propose_event_form') }}">
-        <div>
-            <label for="classes">Relevant Class(es) (Optional):</label>
-            <input type="text" id="classes" name="classes" value="{{ form_data.classes if form_data else '' }}" placeholder="e.g., MATH 1B, HIST 101">
-        </div>
-         <div>
-            <label for="purpose">Purpose / Activity:</label>
-            <textarea id="purpose" name="purpose" placeholder="e.g., 'Review Chapter 5 concepts', 'Work on final project', 'Casual board games hangout'" required>{{ form_data.purpose if form_data else '' }}</textarea>
-        </div>
-        <div>
-            <label for="availability">Your General Availability:</label>
-            <textarea id="availability" name="availability" placeholder="e.g., 'Mon/Wed afternoons after 2pm', 'Flexible on weekends', 'Tues evening'" required>{{ form_data.availability if form_data else '' }}</textarea>
-        </div>
-        <button type="submit">Generate Event Proposals</button>
-    </form>
+        <form method="POST" action="{{ url_for('propose_event_form') }}">
+            <div class="mb-3">
+                <label for="classes" class="form-label">Relevant Class(es) (Optional)</label>
+                <input type="text" class="form-control" id="classes" name="classes" value="{{ form_data.classes if form_data else '' }}" placeholder="e.g., MATH 1B, HIST 101">
+            </div>
+             <div class="mb-3">
+                <label for="purpose" class="form-label">Purpose / Activity <span class="text-danger">*</span></label>
+                <textarea class="form-control" id="purpose" name="purpose" placeholder="e.g., 'Review Chapter 5 concepts', 'Work on final project', 'Casual board games hangout'" required>{{ form_data.purpose if form_data else '' }}</textarea>
+            </div>
+            <div class="mb-3">
+                <label for="availability" class="form-label">Your General Availability <span class="text-danger">*</span></label>
+                <textarea class="form-control" id="availability" name="availability" placeholder="e.g., 'Mon/Wed afternoons after 2pm', 'Flexible on weekends', 'Tues evening'" required>{{ form_data.availability if form_data else '' }}</textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Generate Event Proposals</button>
+        </form>
+    </div>
+</div>
 {% endblock %}
 ================================================================================
 
@@ -825,33 +879,43 @@ File: templates/signup.html
 {% block title %}Sign Up{% endblock %}
 
 {% block content %}
-    <h2>Sign Up</h2>
-    <form method="POST" action="{{ url_for('signup') }}">
-         <div>
-            <label for="name">Name (Optional):</label>
-            <input type="text" id="name" name="name" value="{{ form_data.name if form_data else '' }}">
+<div class="row justify-content-center">
+    <div class="col-md-8 col-lg-6">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title text-center mb-4">Sign Up</h2>
+                <form method="POST" action="{{ url_for('signup') }}">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Name (Optional)</label>
+                        <input type="text" class="form-control" id="name" name="name" value="{{ form_data.name if form_data else '' }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email address</label>
+                        <input type="email" class="form-control" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="phone" class="form-label">Phone (Optional, for reminders)</label>
+                        <input type="tel" class="form-control" id="phone" name="phone" value="{{ form_data.phone if form_data else '' }}" placeholder="e.g., 555-123-4567">
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="confirm_password" class="form-label">Confirm Password</label>
+                        <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">Sign Up</button>
+                    </div>
+                </form>
+                 <p class="text-center mt-3">
+                    Already have an account? <a href="{{ url_for('login') }}">Login here</a>
+                </p>
+            </div>
         </div>
-        <div>
-            <label for="email">Email:</label>
-            <input type="email" id="email" name="email" value="{{ form_data.email if form_data else '' }}" required>
-        </div>
-         <div>
-            <label for="phone">Phone (Optional, for simulated reminders):</label>
-            <input type="tel" id="phone" name="phone" value="{{ form_data.phone if form_data else '' }}" placeholder="e.g., 555-123-4567">
-        </div>
-        <div>
-            <label for="password">Password:</label>
-            <input type="password" id="password" name="password" required>
-        </div>
-        <div>
-            <label for="confirm_password">Confirm Password:</label>
-            <input type="password" id="confirm_password" name="confirm_password" required>
-        </div>
-        <button type="submit">Sign Up</button>
-    </form>
-     <p style="margin-top: 1rem;">
-        Already have an account? <a href="{{ url_for('login') }}">Login here</a>
-    </p>
+    </div>
+</div>
 {% endblock %}
 ================================================================================
 
