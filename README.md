@@ -6,15 +6,15 @@ A Flask-based web application for organizing and finding study sessions and othe
 
 ## Features
 
-* User Authentication (Signup, Login, Logout) [cite: 107, 109, 110]
-* Event Listing and Filtering [cite: 77, 78]
-* Manual Event Creation [cite: 90, 91]
-* View Events on a Calendar [cite: 153, 155]
-* Commit/Uncommit to Events [cite: 100]
-* Add Comments to Events [cite: 104, 105]
-* User Profiles with Availability and Subject Preferences [cite: 94, 96, 118, 120]
-* AI-Powered Weekly Schedule Generation (Admin triggered) [cite: 38, 99]
-* Event Image Generation using DALL-E 3 (with semantic reuse check) [cite: 21, 27]
+* User Authentication (Signup, Login, Logout)
+* Event Listing and Filtering
+* Manual Event Creation
+* View Events on a Calendar
+* Commit/Uncommit to Events
+* Add Comments to Events
+* User Profiles with Availability and Subject Preferences
+* AI-Powered Weekly Schedule Generation (Admin triggered)
+* Event Image Generation using DALL-E 3 (with semantic reuse check)
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ A Flask-based web application for organizing and finding study sessions and othe
     ```bash
     pip install Flask Flask-SQLAlchemy Flask-Login Werkzeug email-validator openai requests python-dateutil
     ```
-    *Note: `python-dateutil` is used for more flexible date parsing[cite: 13, 14].*
+    *Note: `python-dateutil` is used for more flexible date parsing.*
 
 ## Configuration
 
@@ -64,10 +64,10 @@ This application relies on environment variables for sensitive keys. You **must*
             ```powershell
             $env:FLASK_SECRET_KEY='your_generated_secret_key_here'
             ```
-    * The application uses a default **insecure** key if this variable is not set, which should **not** be used in production[cite: 7].
+    * The application uses a default **insecure** key if this variable is not set, which should **not** be used in production.
 
 2.  **Set OpenAI API Key:**
-    * This key is required for generating event images [cite: 19] and for the AI scheduling feature[cite: 54].
+    * This key is required for generating event images and for the AI scheduling feature.
     * Obtain your API key from the OpenAI platform website.
     * Set the environment variable:
         * **Linux/macOS:**
@@ -82,7 +82,7 @@ This application relies on environment variables for sensitive keys. You **must*
             ```powershell
             $env:OPENAI_API_KEY='your_openai_api_key_here'
             ```
-    * The application will print errors and critical features will fail if this key is not set[cite: 19, 113].
+    * The application will print errors and critical features will fail if this key is not set.
 
 ## Running the Application
 
@@ -93,15 +93,15 @@ This application relies on environment variables for sensitive keys. You **must*
     ```bash
     python app.py
     ```
-5.  The application will start, initialize the database (`database.db` will be created if it doesn't exist)[cite: 111], and print messages indicating it's running, typically on `http://127.0.0.1:5001/`[cite: 113].
+5.  The application will start, initialize the database (`database.db` will be created if it doesn't exist), and print messages indicating it's running, typically on `http://127.0.0.1:5001/`.
 
 ## Usage
 
 1.  **Access the application:** Open your web browser and go to `http://127.0.0.1:5001/`.
-2.  **Sign Up / Login:** Create an account or log in using the navigation links[cite: 182, 183, 192, 193].
-3.  **Browse Events:** View existing event proposals on the main page[cite: 175]. Filter and sort events as needed[cite: 128].
-4.  **View Calendar:** See a calendar view of scheduled events[cite: 176].
-5.  **Create Event:** Manually create a new event using the "Create Event" link[cite: 176, 194].
-6.  **Commit/Comment:** Commit to attending events you're interested in or add comments[cite: 135, 138].
-7.  **Edit Profile:** Update your name, phone (optional), availability preferences, and subjects of interest via the "My Profile" link in the user dropdown[cite: 179, 114]. These preferences are used by the AI scheduler[cite: 36, 39].
-8.  **Admin Panel (User ID 1):** If you are logged in as the user with ID 1 (the default admin)[cite: 111, 180], you can access the Admin Panel to trigger the AI weekly scheduler[cite: 157, 158].
+2.  **Sign Up / Login:** Create an account or log in using the navigation links.
+3.  **Browse Events:** View existing event proposals on the main page. Filter and sort events as needed.
+4.  **View Calendar:** See a calendar view of scheduled events.
+5.  **Create Event:** Manually create a new event using the "Create Event" link.
+6.  **Commit/Comment:** Commit to attending events you're interested in or add comments.
+7.  **Edit Profile:** Update your name, phone (optional), availability preferences, and subjects of interest via the "My Profile" link in the user dropdown. These preferences are used by the AI scheduler.
+8.  **Admin Panel (User ID 1):** If you are logged in as the user with ID 1 (the default admin), you can access the Admin Panel to trigger the AI weekly scheduler.
