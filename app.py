@@ -242,20 +242,19 @@ Do NOT include explanations outside the JSON.
 """
         user_prompt = f"Student Preferences for Scheduling:\n{json.dumps(user_data_list, indent=2)}"
 
-        # 3. Call the AI (Suggesting gpt-4o for complexity)
+        # 3. Call the AI (Suggesting 3o-mini for complexity)
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key: raise ValueError("OpenAI API key not found for scheduling")
         client = OpenAI(api_key=api_key)
 
-        print(f"Sending scheduling request to AI (Model: gpt-4o) for {len(user_data_list)} users...")
+        print(f"Sending scheduling request to AI (Model: o3-mini) for {len(user_data_list)} users...")
         response = client.chat.completions.create(
-            model="gpt-4o", # Using a more powerful model for this complex task
+            model="o3-mini", # Using a more powerful model for this complex task
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            temperature=0.5 # Allow some creativity in scheduling
         )
         json_string = response.choices[0].message.content
         print("Received AI schedule proposal...")
@@ -609,5 +608,4 @@ if __name__ == '__main__':
     else:
         print("OpenAI API Key found.")
 
-    #app.run(debug=True, port=5001)
-    # ^ THis is commented out since we're pushing to vercel 
+    app.run(debug=True, port=5001)
